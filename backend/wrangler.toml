@@ -1,0 +1,23 @@
+name = "uas-latency-agent"
+main = "worker.js"
+compatibility_date = "2025-04-01"
+
+# Cron: run every 6 hours. Adjust as you like (must be at minute granularity on free tier).
+# https://developers.cloudflare.com/workers/configuration/cron-triggers/
+[triggers]
+crons = ["0 */6 * * *"]
+
+# KV namespace where the agent stores its state.
+# After running `wrangler kv namespace create UAS_STORE`, paste the returned id below.
+[[kv_namespaces]]
+binding = "STORE"
+id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+
+# Public, non-secret config. Safe to commit.
+[vars]
+MODEL = "claude-haiku-4-5-20251001"
+ITEMS_PER_FEED = "5"
+
+# Secrets are NOT stored here — they're set with `wrangler secret put`:
+#   wrangler secret put ANTHROPIC_API_KEY
+#   wrangler secret put ADMIN_TOKEN

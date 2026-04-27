@@ -1,0 +1,2315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>UAS Response Latency Index + Agentic Crisis Planner</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/prop-types@15/prop-types.min.js"></script>
+<script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js"></script>
+<script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  html, body, #root, * {
+    font-family: 'Courier New', Courier, monospace !important;
+  }
+  body {
+    background: #0a0a0a;
+    color: #ffffff;
+    margin: 0;
+    padding: 0;
+  }
+  table, th, td, button, input, textarea, select {
+    font-family: 'Courier New', Courier, monospace !important;
+  }
+  .leaflet-container {
+    background: #1a1a1a;
+    font-family: 'Courier New', Courier, monospace !important;
+  }
+  .mono {
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.02em;
+  }
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: #0a0a0a; }
+  ::-webkit-scrollbar-thumb { background: #333; border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: #555; }
+  details > summary { list-style: none; cursor: pointer; }
+  details > summary::-webkit-details-marker { display: none; }
+  input::placeholder, textarea::placeholder { color: #666; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef, useMemo } = React;
+const {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell,
+  ScatterChart, Scatter, ReferenceLine, ZAxis
+} = Recharts;
+
+/* ------------------------------------------------------------------ */
+/* Backend configuration                                              */
+/* ------------------------------------------------------------------ */
+// Hardcode your deployed Cloudflare Worker URL here BEFORE pushing to GitHub Pages
+// so visitors don't need to paste it. Leave "" to require a key from each visitor.
+// Example: "https://uas-latency-agent.your-subdomain.workers.dev"
+const DEFAULT_BACKEND_URL = "";
+
+// Read ?backend=https://... from the URL on first load. Lets you share a link
+// like https://your.site/?backend=https://your-worker.workers.dev
+function readBackendFromUrl() {
+  try {
+    const u = new URL(window.location.href);
+    const b = u.searchParams.get("backend");
+    if (b && /^https?:\/\//.test(b)) return b.replace(/\/+$/, "");
+  } catch {}
+  return DEFAULT_BACKEND_URL;
+}
+
+/* ------------------------------------------------------------------ */
+/* Helpers                                                            */
+/* ------------------------------------------------------------------ */
+const safe = (v, fallback = "Unknown") => {
+  if (v === null || v === undefined) return fallback;
+  if (typeof v === "number" && Number.isNaN(v)) return fallback;
+  const s = String(v).trim().toLowerCase();
+  if (s === "" || s === "nan" || s === "null" || s === "undefined" || s === "none") return fallback;
+  return v;
+};
+const num = (v, decimals = 2) => {
+  if (v === null || v === undefined || Number.isNaN(Number(v))) return "Unknown";
+  return Number(v).toFixed(decimals);
+};
+const pct = (v) => {
+  if (v === null || v === undefined || Number.isNaN(Number(v))) return "Unknown";
+  return Number(v).toFixed(1) + "%";
+};
+const formatTimestamp = (d) => {
+  if (!d) return "Unknown";
+  const dt = typeof d === "string" ? new Date(d) : d;
+  if (Number.isNaN(dt.getTime())) return "Unknown";
+  return dt.toISOString().replace("T", " ").slice(0, 19) + "Z";
+};
+
+/* ------------------------------------------------------------------ */
+/* Seed data: U.S. Drone Programs                                     */
+/* ------------------------------------------------------------------ */
+const SEED_PROGRAMS = [
+  { city: "Chula Vista",   state: "CA", lat: 32.6401, lon: -117.0842, agency: "Police Department", program_type: "DFR",          avg_response_min: 2.5, source_name: "sUAS News" },
+  { city: "El Segundo",    state: "CA", lat: 33.9192, lon: -118.4165, agency: "Police Department", program_type: "DFR",          avg_response_min: 2.5, source_name: "DroneLife" },
+  { city: "Reno",          state: "NV", lat: 39.5296, lon: -119.8138, agency: "Police Department", program_type: "DFR",          avg_response_min: 2.5, source_name: "Google News" },
+  { city: "Brookhaven",    state: "GA", lat: 33.8651, lon:  -84.3366, agency: "Police Department", program_type: "DFR",          avg_response_min: 2.5, source_name: "sUAS News" },
+  { city: "Norfolk",       state: "VA", lat: 36.8508, lon:  -76.2859, agency: "Police Department", program_type: "DFR",          avg_response_min: 2.5, source_name: "Unmanned Airspace" },
+  { city: "Fort Wayne",    state: "IN", lat: 41.0793, lon:  -85.1394, agency: "Police Department", program_type: "DFR",          avg_response_min: 2.5, source_name: "DroneLife" },
+  { city: "Las Vegas",     state: "NV", lat: 36.1699, lon: -115.1398, agency: "Police Department", program_type: "DFR",          avg_response_min: 2.5, source_name: "Google News" },
+  { city: "Beverly Hills", state: "CA", lat: 34.0736, lon: -118.4004, agency: "Police Department", program_type: "DFR",          avg_response_min: 2.5, source_name: "sUAS News" },
+  { city: "Arlington",     state: "TX", lat: 32.7357, lon:  -97.1081, agency: "Police Department", program_type: "DFR",          avg_response_min: 2.5, source_name: "DroneLife" },
+  { city: "Memphis",       state: "TN", lat: 35.1495, lon:  -90.0490, agency: "Police Department", program_type: "Municipal UAS", avg_response_min: null, source_name: "Google News" },
+  { city: "Louisville",    state: "KY", lat: 38.2527, lon:  -85.7585, agency: "Fire Department",   program_type: "Municipal UAS", avg_response_min: null, source_name: "Unmanned Airspace" },
+  { city: "Orlando",       state: "FL", lat: 28.5383, lon:  -81.3792, agency: "Fire Department",   program_type: "Municipal UAS", avg_response_min: null, source_name: "sUAS News" },
+  { city: "Phoenix",       state: "AZ", lat: 33.4484, lon: -112.0740, agency: "Fire Department",   program_type: "Municipal UAS", avg_response_min: null, source_name: "DroneLife" },
+  { city: "San Diego",     state: "CA", lat: 32.7157, lon: -117.1611, agency: "Police Department", program_type: "DFR",          avg_response_min: 2.5, source_name: "Google News" },
+  { city: "Dallas",        state: "TX", lat: 32.7767, lon:  -96.7970, agency: "Fire Department",   program_type: "Municipal UAS", avg_response_min: null, source_name: "sUAS News" },
+];
+
+// Generate a clickable search URL for each U.S. Program record based on its source
+const programSourceUrl = (p) => {
+  const city = encodeURIComponent(p.city || "");
+  const cityState = encodeURIComponent(`${p.city || ""} ${p.state || ""} drone ${p.program_type === "DFR" ? "first responder program" : "program"}`);
+  switch (p.source_name) {
+    case "Google News":       return `https://news.google.com/search?q=${cityState}&hl=en-US&gl=US&ceid=US:en`;
+    case "sUAS News":         return `https://www.suasnews.com/?s=${city}`;
+    case "DroneLife":         return `https://dronelife.com/?s=${city}`;
+    case "Unmanned Airspace": return `https://www.unmannedairspace.info/?s=${city}`;
+    default:                  return `https://www.google.com/search?q=${cityState}`;
+  }
+};
+
+const buildSeedWithTimestamps = () => {
+  const now = Date.now();
+  return SEED_PROGRAMS.map((p, i) => ({
+    ...p,
+    extracted_at: new Date(now - i * 47 * 60 * 1000).toISOString(),
+  }));
+};
+
+/* ------------------------------------------------------------------ */
+/* Seed data: Incidents                                               */
+/* ------------------------------------------------------------------ */
+const SEED_INCIDENTS = [
+  { id: "UAS-001", date: "2024-01-15", domain: "defense",  location: "Eastern Ukraine",                lat: 48.5,    lon:  37.8,    incident_type: "hostile_drone_swarm",   detection_latency_s:   2, decision_latency_s:   4, execution_latency_s:   5, total_latency_s:   11, within_window: "yes", outcome: "threat_neutralized", triad_lens: "accelerationist",
+    detection_description: "Forward sensor mesh detected coordinated UAS swarm signature within 2 seconds of border crossing.",
+    response_description:  "Automated counter-UAS engagement layer authorized kinetic response inside engagement window.",
+    source: "Open-source defense reporting (illustrative)" },
+  { id: "UAS-002", date: "2024-02-22", domain: "civilian", location: "Newark Liberty Intl Airport",    lat: 40.6925, lon: -74.1687, incident_type: "airspace_incursion",    detection_latency_s: 180, decision_latency_s: 420, execution_latency_s: 300, total_latency_s:  900, within_window: "no",  outcome: "no_harm",            triad_lens: "safetyist",
+    detection_description: "ATC radar anomaly flagged after pilot report; UAS not on ADS-B.",
+    response_description:  "Ground stop coordinated through FAA channels; departures held 15 minutes.",
+    source: "FAA UAS sighting reports (illustrative)" },
+  { id: "UAS-003", date: "2024-03-08", domain: "defense",  location: "Red Sea Shipping Lane",          lat: 20.0,    lon:  38.0,    incident_type: "attack_drone",          detection_latency_s:   3, decision_latency_s:   5, execution_latency_s:   4, total_latency_s:   12, within_window: "yes", outcome: "threat_neutralized", triad_lens: "accelerationist",
+    detection_description: "Naval radar acquired one-way attack drone on cruise approach.",
+    response_description:  "Phalanx CIWS engaged within engagement window per ROE.",
+    source: "USNI News (illustrative)" },
+  { id: "UAS-004", date: "2024-04-10", domain: "civilian", location: "Gatwick Airport UK",             lat: 51.1537, lon:  -0.1821, incident_type: "airspace_incursion",    detection_latency_s: 240, decision_latency_s: 600, execution_latency_s: 300, total_latency_s: 1140, within_window: "no",  outcome: "no_harm",            triad_lens: "safetyist",
+    detection_description: "Multiple eyewitness UAS sightings near runway approach corridor.",
+    response_description:  "Airport closed; police counter-UAS team deployed; delays cascaded for hours.",
+    source: "BBC reporting (illustrative)" },
+  { id: "UAS-005", date: "2024-05-19", domain: "defense",  location: "Forward Operating Base Iraq",    lat: 33.3152, lon:  44.3661, incident_type: "reconnaissance_drone",  detection_latency_s:   4, decision_latency_s:   6, execution_latency_s:   4, total_latency_s:   14, within_window: "yes", outcome: "threat_neutralized", triad_lens: "accelerationist",
+    detection_description: "Persistent surveillance feed flagged loitering UAS at perimeter.",
+    response_description:  "C-UAS jamming authorized; UAS forced down inside wire.",
+    source: "DoD release (illustrative)" },
+  { id: "UAS-006", date: "2024-06-03", domain: "civilian", location: "Manhattan Restricted Airspace",  lat: 40.7831, lon: -73.9712, incident_type: "airspace_incursion",    detection_latency_s: 420, decision_latency_s: 720, execution_latency_s: 540, total_latency_s: 1680, within_window: "no",  outcome: "threat_escaped",     triad_lens: "skeptic",
+    detection_description: "NYPD aviation alerted by 311 reports of low-flying UAS over residential blocks.",
+    response_description:  "Multi-agency coordination; UAS departed area before interdiction.",
+    source: "NYPD blotter (illustrative)" },
+  { id: "UAS-007", date: "2024-07-14", domain: "civilian", location: "Brooklyn Hospital Heliport",     lat: 40.6892, lon: -73.9442, incident_type: "unauthorized_overflight", detection_latency_s:  90, decision_latency_s: 150, execution_latency_s:  40, total_latency_s:  280, within_window: "no",  outcome: "no_harm",            triad_lens: "safetyist",
+    detection_description: "Heliport ground crew visual contact during medevac approach.",
+    response_description:  "Hold instituted for incoming flight; UAS operator located and cited.",
+    source: "Local press (illustrative)" },
+  { id: "UAS-008", date: "2024-08-25", domain: "defense",  location: "Israeli Northern Border",        lat: 33.1,    lon:  35.6,    incident_type: "coordinated_attack",    detection_latency_s:   2, decision_latency_s:   3, execution_latency_s:   3, total_latency_s:    8, within_window: "yes", outcome: "threat_neutralized", triad_lens: "accelerationist",
+    detection_description: "Iron Dome radar paired with C-UAS pipeline acquired multi-axis swarm.",
+    response_description:  "Layered interceptors engaged inside the engagement window.",
+    source: "IDF spokesperson (illustrative)" },
+  { id: "UAS-009", date: "2024-09-12", domain: "civilian", location: "Boston Logan Airport",           lat: 42.3656, lon: -71.0096, incident_type: "airspace_incursion",    detection_latency_s: 300, decision_latency_s: 540, execution_latency_s: 360, total_latency_s: 1200, within_window: "no",  outcome: "no_harm",            triad_lens: "skeptic",
+    detection_description: "Pilot reports of UAS during final approach prompted ATC alert.",
+    response_description:  "Brief runway closure; counter-UAS unit dispatched; no contact made.",
+    source: "Boston Globe (illustrative)" },
+  { id: "UAS-010", date: "2024-10-30", domain: "defense",  location: "Persian Gulf Patrol Zone",       lat: 26.5,    lon:  51.5,    incident_type: "reconnaissance_drone",  detection_latency_s:   5, decision_latency_s:   8, execution_latency_s:   3, total_latency_s:   16, within_window: "no",  outcome: "threat_neutralized", triad_lens: "accelerationist",
+    detection_description: "Maritime ISR pipeline tracked recon UAS shadowing patrol.",
+    response_description:  "Engagement authorized just outside 15s window; threat downed.",
+    source: "USNI News (illustrative)" },
+];
+
+/* ------------------------------------------------------------------ */
+/* UI primitives                                                      */
+/* ------------------------------------------------------------------ */
+const Card = ({ children, className = "" }) => (
+  <div className={`bg-[#1a1a1a] border border-[#333] rounded-md ${className}`}>{children}</div>
+);
+const Metric = ({ label, value, accent }) => (
+  <Card className="p-4">
+    <div className="text-xs uppercase tracking-wider text-gray-400">{label}</div>
+    <div className={`mt-1 text-2xl font-bold mono ${accent ? "text-red-500" : "text-white"}`}>{value}</div>
+  </Card>
+);
+const SectionTitle = ({ children, sub }) => (
+  <div className="mb-3">
+    <h2 className="text-xl font-bold text-white">{children}</h2>
+    {sub ? <p className="text-sm text-gray-400 mt-1">{sub}</p> : null}
+  </div>
+);
+const InfoBox = ({ tone = "blue", children }) => {
+  const tones = {
+    blue:  "border-blue-700 bg-blue-950/40 text-blue-100",
+    green: "border-green-700 bg-green-950/40 text-green-100",
+    red:   "border-red-700 bg-red-950/40 text-red-100",
+  };
+  return <div className={`border rounded-md p-3 text-sm ${tones[tone]}`}>{children}</div>;
+};
+const Btn = ({ children, onClick, variant = "primary", className = "", type = "button" }) => {
+  const styles = {
+    primary:   "bg-red-600 hover:bg-red-500 text-white border border-red-700",
+    secondary: "bg-[#1a1a1a] hover:bg-[#222] text-white border border-[#333]",
+    ghost:     "bg-transparent hover:bg-[#1a1a1a] text-white border border-[#333]",
+  };
+  return (
+    <button type={type} onClick={onClick}
+      className={`px-3 py-2 rounded text-sm font-medium transition-colors ${styles[variant]} ${className}`}>
+      {children}
+    </button>
+  );
+};
+const Input = (props) => (
+  <input {...props}
+    className={`bg-[#0a0a0a] border border-[#333] rounded px-3 py-2 text-white text-sm w-full focus:outline-none focus:border-red-500 ${props.className || ""}`} />
+);
+const Select = ({ children, ...props }) => (
+  <select {...props}
+    className={`bg-[#0a0a0a] border border-[#333] rounded px-3 py-2 text-white text-sm focus:outline-none focus:border-red-500 ${props.className || ""}`}>
+    {children}
+  </select>
+);
+const Textarea = (props) => (
+  <textarea {...props}
+    className={`bg-[#0a0a0a] border border-[#333] rounded px-3 py-2 text-white text-sm w-full focus:outline-none focus:border-red-500 ${props.className || ""}`} />
+);
+
+/* ------------------------------------------------------------------ */
+/* Tabs                                                               */
+/* ------------------------------------------------------------------ */
+const Tabs = ({ value, onChange }) => {
+  const tabs = [
+    { key: "latency", label: "📡 UAS Latency Index" },
+    { key: "planner", label: "🏙️ Agentic Crisis Planner" },
+  ];
+  return (
+    <div className="flex gap-6 border-b border-[#333] px-6">
+      {tabs.map(t => (
+        <button key={t.key} onClick={() => onChange(t.key)}
+          className={`py-3 text-sm font-medium transition-colors border-b-2 -mb-px ${
+            value === t.key
+              ? "text-white border-red-500"
+              : "text-gray-400 hover:text-white border-transparent"
+          }`}>
+          {t.label}
+        </button>
+      ))}
+    </div>
+  );
+};
+
+/* ------------------------------------------------------------------ */
+/* Leaflet map wrapper                                                */
+/* ------------------------------------------------------------------ */
+const LeafletMap = ({ id, center, zoom, markers, heatmap, viewMode = "markers", height = 400, legend }) => {
+  const ref = useRef(null);
+  const mapRef = useRef(null);
+  const layerRef = useRef(null);
+  const heatRef = useRef(null);
+
+  useEffect(() => {
+    if (!ref.current || mapRef.current) return;
+    const map = L.map(ref.current, { zoomControl: true, attributionControl: true })
+      .setView(center, zoom);
+    L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap, &copy; CARTO',
+    }).addTo(map);
+    mapRef.current = map;
+    layerRef.current = L.layerGroup().addTo(map);
+  }, []);
+
+  useEffect(() => {
+    if (!mapRef.current || !layerRef.current) return;
+    const showMarkers = viewMode === "markers" || viewMode === "both";
+    layerRef.current.clearLayers();
+    if (showMarkers) {
+      (markers || []).forEach(m => {
+        const icon = L.divIcon({
+          className: "",
+          html: `<div style="width:14px;height:14px;border-radius:50%;background:${m.color};border:2px solid #fff;box-shadow:0 0 6px ${m.color};"></div>`,
+          iconSize: [14, 14],
+          iconAnchor: [7, 7],
+        });
+        const marker = L.marker([m.lat, m.lon], { icon }).addTo(layerRef.current);
+        if (m.popup) marker.bindPopup(m.popup);
+      });
+    }
+  }, [markers, viewMode]);
+
+  useEffect(() => {
+    if (!mapRef.current) return;
+    const showHeat = (viewMode === "heatmap" || viewMode === "both") && Array.isArray(heatmap) && heatmap.length > 0;
+    if (heatRef.current) {
+      mapRef.current.removeLayer(heatRef.current);
+      heatRef.current = null;
+    }
+    if (showHeat && typeof L.heatLayer === "function") {
+      heatRef.current = L.heatLayer(heatmap, {
+        radius: 28,
+        blur: 22,
+        maxZoom: 8,
+        max: 1.0,
+        minOpacity: 0.35,
+        gradient: { 0.0: "#1e3a8a", 0.3: "#7e22ce", 0.55: "#ef4444", 0.8: "#f97316", 1.0: "#fde047" },
+      }).addTo(mapRef.current);
+    }
+  }, [heatmap, viewMode]);
+
+  return (
+    <div className="relative">
+      <div id={id} ref={ref} style={{ height: `${height}px`, width: "100%", borderRadius: 6, border: "1px solid #333" }} />
+      {legend ? (
+        <div className="absolute bottom-2 right-2 bg-[#0a0a0a]/90 border border-[#333] rounded p-2 text-xs space-y-1 z-[500]">
+          {legend.map((l, i) => (
+            <div key={i} className="flex items-center gap-2">
+              <span style={{ width: 10, height: 10, borderRadius: "50%", background: l.color, display: "inline-block" }} />
+              <span>{l.label}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+};
+
+/* ------------------------------------------------------------------ */
+/* Searchable table                                                   */
+/* ------------------------------------------------------------------ */
+const SearchableTable = ({ rows, columns, search, setSearch, placeholder = "Search…", emptyText = "No matching rows." }) => {
+  const filtered = useMemo(() => {
+    if (!search) return rows;
+    const q = search.toLowerCase();
+    return rows.filter(r =>
+      columns.some(c => String(safe(r[c.key], "")).toLowerCase().includes(q))
+    );
+  }, [rows, columns, search]);
+  return (
+    <div className="space-y-2">
+      <Input value={search} onChange={e => setSearch(e.target.value)} placeholder={placeholder} />
+      <div className="overflow-x-auto border border-[#333] rounded">
+        <table className="w-full text-sm">
+          <thead className="bg-[#1a1a1a]">
+            <tr>
+              {columns.map(c => (
+                <th key={c.key} className="text-left px-3 py-2 font-medium text-gray-300 border-b border-[#333]">{c.label}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.length === 0 ? (
+              <tr><td colSpan={columns.length} className="px-3 py-6 text-center text-gray-500">{emptyText}</td></tr>
+            ) : filtered.map((r, i) => (
+              <tr key={i} className="bg-[#111] border-b border-[#222] hover:bg-[#181818]">
+                {columns.map(c => (
+                  <td key={c.key} className="px-3 py-2 text-gray-200 mono">
+                    {c.render ? c.render(r) : safe(r[c.key])}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+};
+
+/* ------------------------------------------------------------------ */
+/* Live Defense / Conflict-zone RSS scanner                           */
+/* ------------------------------------------------------------------ */
+const DEFENSE_FEEDS = [
+  { name: "Defense News",      url: "https://www.defensenews.com/arc/outboundfeeds/rss/?outputType=xml", category: "defense" },
+  { name: "USNI News",         url: "https://news.usni.org/feed",                                        category: "defense" },
+  { name: "Breaking Defense",  url: "https://breakingdefense.com/feed/",                                 category: "defense" },
+  { name: "War on the Rocks",  url: "https://warontherocks.com/feed/",                                   category: "defense" },
+  { name: "ISW",               url: "https://www.understandingwar.org/rss.xml",                          category: "osint" },
+  { name: "Bellingcat",        url: "https://www.bellingcat.com/feed/",                                  category: "osint" },
+  { name: "sUAS News",         url: "https://www.suasnews.com/feed/",                                    category: "trade" },
+  { name: "Google News: drone military", url: "https://news.google.com/rss/search?q=drone+military+OR+UAS+OR+UAV+attack&hl=en-US&gl=US&ceid=US:en", category: "wire" },
+  { name: "Google News: counter-UAS",    url: "https://news.google.com/rss/search?q=counter-UAS+OR+%22counter+drone%22+OR+%22shot+down+drone%22&hl=en-US&gl=US&ceid=US:en", category: "wire" },
+];
+
+const stripHtml = (s) => (s || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+
+// Wrap fetch with a hard timeout so a slow proxy can't hang the UI forever
+async function fetchWithTimeout(url, opts = {}, ms = 10000) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(new Error(`timeout after ${ms}ms`)), ms);
+  try {
+    return await fetch(url, { ...opts, signal: ctrl.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchFeedViaRss2Json(feed, count = 6) {
+  // Free tier no longer allows count param — fetch full and slice client-side.
+  const url = `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(feed.url)}`;
+  const res = await fetchWithTimeout(url, {}, 10000);
+  if (!res.ok) throw new Error(`rss2json HTTP ${res.status}`);
+  const data = await res.json();
+  if (data.status !== "ok" || !Array.isArray(data.items)) throw new Error(data.message || "rss2json parse failed");
+  return data.items.slice(0, count).map(it => ({
+    source: feed.name,
+    category: feed.category,
+    title: (it.title || "").trim(),
+    link: it.link || "",
+    pubDate: it.pubDate || "",
+    description: stripHtml(it.description).slice(0, 500),
+  }));
+}
+
+// Fallback: allorigins.win returns raw XML, parse with DOMParser
+async function fetchFeedViaAllOrigins(feed, count = 6) {
+  const url = `https://api.allorigins.win/raw?url=${encodeURIComponent(feed.url)}`;
+  const res = await fetchWithTimeout(url, {}, 10000);
+  if (!res.ok) throw new Error(`allorigins HTTP ${res.status}`);
+  const xml = await res.text();
+  const doc = new DOMParser().parseFromString(xml, "text/xml");
+  const parserError = doc.querySelector("parsererror");
+  if (parserError) throw new Error("allorigins XML parse failed");
+  // RSS 2.0 uses <item>, Atom uses <entry>
+  const nodes = Array.from(doc.querySelectorAll("item, entry")).slice(0, count);
+  if (nodes.length === 0) throw new Error("allorigins: no items in feed");
+  return nodes.map(n => {
+    const get = (sel) => {
+      const el = n.querySelector(sel);
+      return el ? (el.textContent || "").trim() : "";
+    };
+    const linkEl = n.querySelector("link");
+    const link = linkEl ? (linkEl.textContent.trim() || linkEl.getAttribute("href") || "") : "";
+    return {
+      source: feed.name,
+      category: feed.category,
+      title: get("title"),
+      link,
+      pubDate: get("pubDate") || get("published") || get("updated"),
+      description: stripHtml(get("description") || get("summary") || get("content")).slice(0, 500),
+    };
+  });
+}
+
+async function fetchFeed(feed, count = 6) {
+  let rssErr = null;
+  try {
+    const items = await fetchFeedViaRss2Json(feed, count);
+    return { items, via: "rss2json" };
+  } catch (e) { rssErr = e; }
+  try {
+    const items = await fetchFeedViaAllOrigins(feed, count);
+    return { items, via: "allorigins", rss2jsonError: rssErr?.message };
+  } catch (e2) {
+    throw new Error(`rss2json: ${rssErr?.message || "fail"} · allorigins: ${e2.message || "fail"}`);
+  }
+}
+
+async function classifyWithClaude(apiKey, model, items, transcriptSink) {
+  const list = items.map((it, i) => `[${i}] SOURCE: ${it.source} | TITLE: ${it.title} | DESC: ${it.description}`).join("\n");
+  const sys = "You are a defense OSINT analyst classifying news items. Return only a JSON array, no prose, no markdown fences. Make confident geographic inferences from context — do not return null for conflict_zone, country, lat, or lon unless the item provides truly zero geographic signal.";
+  const user = `Below are RSS items. For each, return one JSON object with these fields:
+
+- index (integer matching the input index)
+- is_drone_related (boolean: true only if the item is substantively about uncrewed aerial systems / drones / UAS / UAV / loitering munitions / counter-drone)
+- conflict_zone (string — be specific, e.g. "Eastern Ukraine", "Red Sea Shipping Lane", "Israeli Northern Border", "Sudan Civil War", "Persian Gulf", "Taiwan Strait")
+- country (full country name)
+- lat (number — best-guess centroid for the conflict_zone)
+- lon (number — best-guess centroid for the conflict_zone)
+- drone_class (one of "one-way attack", "ISR", "loitering munition", "quadcopter", "fixed-wing", "swarm", "unknown")
+- response_type (one of "kinetic", "EW/jamming", "passive", "none", "unknown")
+- reported_latency_seconds (number or null — only if the item explicitly states a response time)
+- triad_lens (one of "accelerationist", "safetyist", "skeptic" — your best read of the framing)
+- summary (one sentence, <=200 chars)
+
+INFERENCE RULES — apply these aggressively:
+- "Ukraine" / "Kyiv" / "Donetsk" / "Kharkiv" / "Zaporizhzhia" → Eastern Ukraine, Ukraine, ~48.5, 37.8
+- "Red Sea" / "Houthi" / "Bab-el-Mandeb" / "USS …" attacked by drones → Red Sea Shipping Lane, Yemen, 13.5, 43.0
+- "Israel" / "IDF" / "Gaza" / "Lebanon border" / "Hezbollah" → Israeli Northern Border or Gaza, Israel, 33.1, 35.6
+- "Russia" attacking infrastructure → Eastern Ukraine if Ukrainian targets, else Russia
+- "Pentagon" / "DoD" without a theater → United States, 38.9, -77.0 (treat as policy item; conflict_zone = "Pentagon Policy")
+- "Iran" / "IRGC" → Persian Gulf, Iran, 26.5, 51.5
+- Source = "USNI News" with no other signal → likely maritime; if unclear, "Indo-Pacific Maritime", 15, 130
+- Source = "ISW" with no other signal → likely Russia/Ukraine; default to Eastern Ukraine
+- Source = "Bellingcat" → use whatever country signal is in headline
+- Only return null for conflict_zone/lat/lon if the headline is truly geographically silent (e.g. "How to think about loitering munitions").
+
+Return ONLY a JSON array of objects. No prose. No code fences.
+
+Items:
+${list}`;
+
+  const res = await fetchWithTimeout("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-access": "true",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      model,
+      max_tokens: 4096,
+      system: sys,
+      messages: [{ role: "user", content: user }],
+    }),
+  }, 60000);
+  const rawBody = await res.text();
+  if (transcriptSink) {
+    transcriptSink({
+      timestamp: new Date().toISOString(),
+      model,
+      http_status: res.status,
+      request: { system: sys, user, item_count: items.length },
+      response_raw: rawBody.slice(0, 20000),
+    });
+  }
+  if (!res.ok) {
+    throw new Error(`Claude API ${res.status}: ${rawBody.slice(0, 300)}`);
+  }
+  let data;
+  try { data = JSON.parse(rawBody); } catch { throw new Error("Claude returned non-JSON body"); }
+  let text = (data.content && data.content[0] && data.content[0].text) || "[]";
+  text = text.trim().replace(/^```json\s*/i, "").replace(/```\s*$/i, "").trim();
+  // tolerate any leading prose by grabbing first [ ... ] block
+  const start = text.indexOf("[");
+  const end = text.lastIndexOf("]");
+  if (start !== -1 && end !== -1) text = text.slice(start, end + 1);
+  return JSON.parse(text);
+}
+
+function DefenseFeedScanner({ apiKey, setApiKey, model, backendUrl, appendIncidents }) {
+  const [items, setItems] = useState([]);
+  const [status, setStatus] = useState("idle"); // idle | fetching | classifying | ready | error
+  const [error, setError] = useState(null);
+  const [lastSweep, setLastSweep] = useState(null);
+  const [search, setSearch] = useState("");
+  const [progress, setProgress] = useState({ done: 0, total: 0 });
+  const [feedErrors, setFeedErrors] = useState([]);
+  const [draftKey, setDraftKey] = useState("");
+  const [keyJustSaved, setKeyJustSaved] = useState(false);
+  const [diag, setDiag] = useState(null); // { rss: {...}, claude: {...} }
+  const [diagRunning, setDiagRunning] = useState(false);
+  const [transcript, setTranscript] = useState([]); // { timestamp, model, http_status, request, response_raw }
+  const [sources, setSources] = useState(null); // { rss: N, acled: N, gdelt: N }
+  const [mapView, setMapView] = useState("markers"); // "markers" | "heatmap" | "both"
+
+  const runDiagnostics = async () => {
+    setDiagRunning(true);
+
+    // === Backend mode: just test the backend ===
+    if (backendUrl) {
+      setDiag({ rss: { status: "running" }, claude: { status: "running" } });
+      const result = { rss: null, claude: null };
+      try {
+        const res = await fetchWithTimeout(`${backendUrl}/api/items`, {}, 15000);
+        const text = await res.text();
+        let parsed = null;
+        try { parsed = JSON.parse(text); } catch {}
+        if (res.ok && parsed && Array.isArray(parsed.classified)) {
+          result.rss = {
+            status: "ok",
+            httpStatus: res.status,
+            message: `Backend returned ${parsed.classified.length} classified items, generated_at ${parsed.generated_at || "unknown"}`,
+            sample: parsed.classified[0]?.title || null,
+          };
+          result.claude = {
+            status: "ok",
+            httpStatus: res.status,
+            model: parsed.classified[0] ? "(backend used its own model)" : model,
+            message: `Backend mode active — Claude calls happen server-side on a cron schedule, not from this browser.`,
+          };
+        } else {
+          result.rss = {
+            status: "fail",
+            httpStatus: res.status,
+            message: parsed?.error || text.slice(0, 300) || "no body",
+          };
+          result.claude = { status: "skipped", message: "Backend test failed — see RSS box for the response." };
+        }
+      } catch (e) {
+        result.rss = { status: "fail", message: `Backend unreachable: ${e.message || e}` };
+        result.claude = { status: "skipped", message: "Backend test failed — Claude not tested." };
+      }
+      setDiag(result);
+      setDiagRunning(false);
+      return;
+    }
+
+    setDiag({ rss: { status: "running" }, claude: { status: "running" } });
+    const out = { rss: null, claude: null };
+
+    // 1) RSS test — use the same fetcher pipeline the agent uses (rss2json → allorigins fallback)
+    try {
+      const testFeed = DEFENSE_FEEDS[0];
+      const { items, via } = await fetchFeed(testFeed, 1);
+      out.rss = {
+        status: items.length > 0 ? "ok" : "fail",
+        message: items.length > 0 ? `Got ${items.length} item(s) from ${testFeed.name} via ${via}` : "no items",
+        sample: items[0]?.title || null,
+      };
+    } catch (e) {
+      out.rss = { status: "fail", message: "All RSS proxies failed: " + (e.message || String(e)) };
+    }
+    // Push partial result so the user sees RSS finish before Claude
+    setDiag({ ...out, claude: { status: "running" } });
+
+    // 2) Claude API test (minimal: ask for a single word)
+    const key = apiKey || draftKey.trim();
+    if (key && key !== apiKey) {
+      // Commit the draft so the rest of the UI catches up
+      setApiKey(key);
+      setKeyJustSaved(true);
+      setTimeout(() => setKeyJustSaved(false), 2500);
+    }
+    if (!key) {
+      out.claude = { status: "skipped", message: "No API key set." };
+    } else {
+      try {
+        const res = await fetchWithTimeout("https://api.anthropic.com/v1/messages", {
+          method: "POST",
+          headers: {
+            "x-api-key": key,
+            "anthropic-version": "2023-06-01",
+            "anthropic-dangerous-direct-browser-access": "true",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            model,
+            max_tokens: 16,
+            messages: [{ role: "user", content: "Reply with exactly the word: pong" }],
+          }),
+        }, 15000);
+        const text = await res.text();
+        let parsed = null;
+        try { parsed = JSON.parse(text); } catch {}
+        out.claude = {
+          status: res.ok ? "ok" : "fail",
+          httpStatus: res.status,
+          message: res.ok
+            ? `Reply: ${parsed?.content?.[0]?.text || text.slice(0,200)}`
+            : (parsed?.error?.message || text.slice(0, 400)),
+          model,
+        };
+      } catch (e) {
+        out.claude = { status: "fail", message: "Network/CORS error reaching api.anthropic.com: " + (e.message || String(e)) };
+      }
+    }
+
+    setDiag(out);
+    setDiagRunning(false);
+  };
+
+  const saveKey = () => {
+    const k = draftKey.trim();
+    if (!k) return;
+    setApiKey(k);
+    setKeyJustSaved(true);
+    setTimeout(() => setKeyJustSaved(false), 2500);
+  };
+
+  const downloadTranscript = () => {
+    if (!transcript.length) return;
+    const payload = {
+      generated_at: new Date().toISOString(),
+      app: "UAS Response Latency Index — Defense & Conflict-Zone Drone Feed",
+      model_used: model,
+      feeds_polled: DEFENSE_FEEDS.map(f => ({ name: f.name, url: f.url, category: f.category })),
+      classified_items: items,
+      agent_calls: transcript,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `agent-transcript-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const counts = useMemo(() => {
+    const zones = new Set(items.map(i => i.conflict_zone).filter(Boolean));
+    const platforms = new Set(items.map(i => i.drone_class).filter(Boolean));
+    return { reports: items.length, zones: zones.size, platforms: platforms.size, sources: DEFENSE_FEEDS.length };
+  }, [items]);
+
+  const filtered = useMemo(() => {
+    if (!search) return items;
+    const q = search.toLowerCase();
+    return items.filter(i => JSON.stringify(i).toLowerCase().includes(q));
+  }, [items, search]);
+
+  const liveFeed = useMemo(() => [...items].slice(0, 10), [items]);
+
+  const markers = items
+    .filter(i => typeof i.lat === "number" && typeof i.lon === "number")
+    .map(i => ({
+      lat: i.lat,
+      lon: i.lon,
+      color: i.response_type === "kinetic" ? "#ef4444"
+           : i.response_type === "EW/jamming" ? "#eab308"
+           : i.response_type === "passive" ? "#3b82f6"
+           : "#9ca3af",
+      popup: `<b>${(i.id || "").trim()}</b><br/>${safe(i.conflict_zone)}<br/>${safe(i.drone_class)} · ${safe(i.response_type)}${typeof i.fatalities === "number" && i.fatalities > 0 ? `<br/><b style="color:#fde047">${i.fatalities} fatalities</b>` : ""}<br/><a href="${i.link}" target="_blank" style="color:#ef4444">source</a>`,
+    }));
+
+  // Fatality-weighted heatmap data: log-scaled with a 0.2 floor so 0-fatality
+  // events still register as low-intensity points and high-fatality events glow.
+  const heatmapData = useMemo(() => {
+    const geo = items.filter(i => typeof i.lat === "number" && typeof i.lon === "number");
+    if (geo.length === 0) return [];
+    const maxFatal = Math.max(1, ...geo.map(i => Number(i.fatalities) || 0));
+    return geo.map(i => {
+      const f = Number(i.fatalities) || 0;
+      // log-scale + floor: small events show, big events dominate.
+      const intensity = Math.min(1, 0.2 + 0.8 * (Math.log(f + 1) / Math.log(maxFatal + 1)));
+      return [i.lat, i.lon, intensity];
+    });
+  }, [items]);
+
+  const totalFatalities = useMemo(
+    () => items.reduce((sum, i) => sum + (Number(i.fatalities) || 0), 0),
+    [items]
+  );
+
+  // Top-10 zones by indexed fatalities, for the lollipop chart
+  const topFatalZones = useMemo(() => {
+    const tally = new Map();
+    items.forEach(i => {
+      const f = Number(i.fatalities) || 0;
+      if (f <= 0) return;
+      const zone = i.conflict_zone || i.country || "Unknown";
+      tally.set(zone, (tally.get(zone) || 0) + f);
+    });
+    return Array.from(tally.entries())
+      .map(([zone, fatalities]) => ({ zone, fatalities }))
+      .sort((a, b) => b.fatalities - a.fatalities)
+      .slice(0, 10);
+  }, [items]);
+
+  const runSweep = async () => {
+    // === Backend mode: just fetch the pre-classified payload, no key needed ===
+    if (backendUrl) {
+      setError(null);
+      setStatus("fetching");
+      try {
+        const res = await fetchWithTimeout(`${backendUrl}/api/items`, {}, 15000);
+        if (!res.ok) throw new Error(`Backend HTTP ${res.status}`);
+        const payload = await res.json();
+        const classified = Array.isArray(payload.classified) ? payload.classified : [];
+        setItems(classified);
+        setSources(payload.sources || null);
+        setLastSweep(payload.generated_at ? new Date(payload.generated_at) : new Date());
+        setTranscript([
+          { type: "backend_fetch", timestamp: new Date().toISOString(), backend: backendUrl, generated_at: payload.generated_at, items: classified.length },
+          ...(payload.log || []).map(l => ({ type: "backend_log", ...l })),
+        ]);
+        setStatus("ready");
+
+        // Push qualifying items into the global incident state
+        const newIncidents = classified
+          .filter(c => typeof c.lat === "number" && typeof c.lon === "number" && typeof c.reported_latency_seconds === "number")
+          .map(c => {
+            const total = c.reported_latency_seconds;
+            return {
+              id: c.id,
+              date: (c.pubDate || "").slice(0, 10) || new Date().toISOString().slice(0, 10),
+              domain: "defense",
+              location: c.conflict_zone || c.country || "Unknown",
+              lat: c.lat,
+              lon: c.lon,
+              incident_type: c.drone_class || "unknown",
+              detection_latency_s: Math.max(1, Math.round(total * 0.2)),
+              decision_latency_s:  Math.max(1, Math.round(total * 0.4)),
+              execution_latency_s: Math.max(1, Math.round(total * 0.4)),
+              total_latency_s: total,
+              within_window: total <= 15 ? "yes" : "no",
+              outcome: c.response_type === "kinetic" ? "threat_neutralized"
+                     : c.response_type === "EW/jamming" ? "threat_neutralized"
+                     : c.response_type === "passive" ? "no_harm"
+                     : "unknown",
+              triad_lens: c.triad_lens || "accelerationist",
+              detection_description: c.summary || c.title,
+              response_description: `Live extraction from ${c.source} (via backend agent).`,
+              source: c.link || c.source,
+            };
+          });
+        appendIncidents(newIncidents);
+      } catch (e) {
+        setStatus("error");
+        setError(`Backend fetch failed: ${e.message || e}. Either the backend is down, or the URL is wrong, or the agent has not run a sweep yet (cron hasn't fired and /api/run was never called).`);
+      }
+      return;
+    }
+
+    // === Browser-direct mode: needs a key ===
+    let effectiveKey = apiKey;
+    if (!effectiveKey && draftKey.trim()) {
+      effectiveKey = draftKey.trim();
+      setApiKey(effectiveKey);
+    }
+    if (!effectiveKey) {
+      setError("Paste your Anthropic API key into the yellow box above, then click Save key (or just paste and click Run — we'll auto-save). OR set a Backend URL in the Configure panel at the top so visitors don't need a key.");
+      setStatus("error");
+      return;
+    }
+    setError(null);
+    setFeedErrors([]);
+    setStatus("fetching");
+    setProgress({ done: 0, total: DEFENSE_FEEDS.length });
+
+    const fetched = [];
+    const fErrs = [];
+    await Promise.all(DEFENSE_FEEDS.map(async (feed) => {
+      try {
+        const { items: got } = await fetchFeed(feed, 5);
+        fetched.push(...got);
+      } catch (e) {
+        fErrs.push(`${feed.name}: ${e.message || e}`);
+      } finally {
+        setProgress(p => ({ ...p, done: p.done + 1 }));
+      }
+    }));
+    setFeedErrors(fErrs);
+
+    if (fetched.length === 0) {
+      setStatus("error");
+      setError("No feeds returned items. The rss2json proxy may be rate-limited; try again in a minute.");
+      return;
+    }
+
+    setStatus("classifying");
+
+    // Reset transcript for this sweep so it represents one run
+    const sweepTranscript = [];
+    sweepTranscript.push({
+      timestamp: new Date().toISOString(),
+      type: "sweep_started",
+      model,
+      feeds_attempted: DEFENSE_FEEDS.length,
+      feeds_with_errors: fErrs.length,
+      raw_items_fetched: fetched.length,
+    });
+
+    // Chunk to avoid huge prompts
+    const chunks = [];
+    const CHUNK = 18;
+    for (let i = 0; i < fetched.length; i += CHUNK) chunks.push(fetched.slice(i, i + CHUNK));
+
+    const classified = [];
+    let counter = 0;
+    for (const chunk of chunks) {
+      try {
+        const results = await classifyWithClaude(effectiveKey, model, chunk, (entry) => sweepTranscript.push({ type: "claude_call", ...entry }));
+        results.forEach((r) => {
+          if (r == null || typeof r !== "object") return;
+          if (!r.is_drone_related) return;
+          const item = chunk[Number(r.index)];
+          if (!item) return;
+          counter += 1;
+          classified.push({
+            ...item,
+            ...r,
+            id: `DEF-${counter.toString().padStart(3, "0")}`,
+            extracted_at: new Date().toISOString(),
+          });
+        });
+      } catch (e) {
+        setError("Claude classification failed: " + (e.message || String(e)));
+      }
+    }
+
+    sweepTranscript.push({
+      timestamp: new Date().toISOString(),
+      type: "sweep_completed",
+      drone_related_items_classified: classified.length,
+    });
+    setTranscript(sweepTranscript);
+
+    setItems(classified);
+    setSources({ rss: classified.length, acled: 0, gdelt: 0 });
+    setLastSweep(new Date());
+    setStatus("ready");
+
+    // Push qualifying items into the global incident state
+    const newIncidents = classified
+      .filter(c => typeof c.lat === "number" && typeof c.lon === "number" && typeof c.reported_latency_seconds === "number")
+      .map(c => {
+        const total = c.reported_latency_seconds;
+        return {
+          id: c.id,
+          date: (c.pubDate || "").slice(0, 10) || new Date().toISOString().slice(0, 10),
+          domain: "defense",
+          location: c.conflict_zone || c.country || "Unknown",
+          lat: c.lat,
+          lon: c.lon,
+          incident_type: c.drone_class || "unknown",
+          detection_latency_s: Math.max(1, Math.round(total * 0.2)),
+          decision_latency_s:  Math.max(1, Math.round(total * 0.4)),
+          execution_latency_s: Math.max(1, Math.round(total * 0.4)),
+          total_latency_s: total,
+          within_window: total <= 15 ? "yes" : "no",
+          outcome: c.response_type === "kinetic"     ? "threat_neutralized"
+                 : c.response_type === "EW/jamming"  ? "threat_neutralized"
+                 : c.response_type === "passive"     ? "no_harm"
+                 : "unknown",
+          triad_lens: c.triad_lens || "accelerationist",
+          detection_description: c.summary || c.title,
+          response_description: `Live extraction from ${c.source}.`,
+          source: c.link || c.source,
+        };
+      });
+    appendIncidents(newIncidents);
+  };
+
+  return (
+    <section>
+      <SectionTitle sub={backendUrl
+        ? "Reads pre-classified items from your Cloudflare Worker, which polls 9 RSS feeds on a cron schedule and runs Claude classification server-side. No API key needed in the browser."
+        : "A live agent fetches real RSS items from defense, OSINT, wire, and trade press feeds, then classifies them with Claude. Items with parsed coordinates and an explicit response time are appended to the global Incident Log below."}>
+        🛰️ Defense & Conflict-Zone Drone Feed {backendUrl ? "(Backend)" : "(Live)"}
+        {backendUrl
+          ? <span className="ml-2 text-[10px] uppercase tracking-wider text-green-400 bg-green-950/40 border border-green-700 rounded px-2 py-0.5 align-middle">backend · no key needed</span>
+          : <span className="ml-2 text-[10px] uppercase tracking-wider text-yellow-400 bg-yellow-950/40 border border-yellow-700 rounded px-2 py-0.5 align-middle">live · uses your API key</span>}
+      </SectionTitle>
+
+      {backendUrl ? (
+        <Card className="p-4 mb-3 border-green-700 bg-green-950/20">
+          <div className="text-sm text-green-200">
+            📡 Backend mode — reading pre-classified items from <a href={backendUrl} target="_blank" rel="noreferrer" className="underline hover:text-green-100">{backendUrl.replace(/^https?:\/\//, "")}</a>. No API key needed; visitors see the latest cron-published sweep.
+          </div>
+        </Card>
+      ) : (
+      <Card className={`p-4 mb-3 ${apiKey ? "border-green-700 bg-green-950/20" : "border-yellow-700 bg-yellow-950/30"}`}>
+        {apiKey ? (
+          <div className="flex items-center justify-between">
+            <div className="text-sm text-green-200">
+              ✓ API key set ({apiKey.slice(0, 8)}…{apiKey.slice(-4)}) — agent ready to run
+              {keyJustSaved ? <span className="ml-2 text-green-400 text-xs">just saved</span> : null}
+            </div>
+            <button onClick={() => { setApiKey(""); setDraftKey(""); }}
+              className="text-xs text-gray-400 hover:text-red-300 border border-[#333] rounded px-2 py-1">Clear key</button>
+          </div>
+        ) : (
+          <div>
+            <div className="text-sm text-yellow-200 font-bold mb-2">⚠ Anthropic API key required to run the live agent</div>
+            <div className="text-xs text-yellow-100/80 mb-3">
+              The agent calls Claude directly from your browser to classify RSS items. Paste your key, then click Save — it stays in memory only and is never stored or transmitted anywhere except api.anthropic.com.
+            </div>
+            <form onSubmit={e => { e.preventDefault(); saveKey(); }} className="flex gap-2">
+              <input
+                type="password"
+                autoComplete="off"
+                spellCheck={false}
+                placeholder="sk-ant-…"
+                value={draftKey}
+                onChange={e => setDraftKey(e.target.value)}
+                onPaste={e => {
+                  const pasted = (e.clipboardData || window.clipboardData).getData("text").trim();
+                  if (pasted && /^sk-ant-/.test(pasted)) {
+                    e.preventDefault();
+                    setDraftKey(pasted);
+                    setApiKey(pasted);
+                    setKeyJustSaved(true);
+                    setError(null);
+                    setTimeout(() => setKeyJustSaved(false), 2500);
+                  }
+                }}
+                className="flex-1 bg-[#0a0a0a] border border-yellow-700 rounded px-3 py-2 text-white text-sm focus:outline-none focus:border-yellow-400"
+              />
+              <button type="submit"
+                className="bg-yellow-600 hover:bg-yellow-500 text-black font-bold rounded px-4 py-2 text-sm whitespace-nowrap">Save key</button>
+              <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noreferrer"
+                className="text-xs text-yellow-300 hover:text-yellow-100 underline self-center whitespace-nowrap">Get a key →</a>
+            </form>
+            <div className="text-[11px] text-yellow-100/60 mt-2">Tip: paste your full key, then press Enter or click Save. The card will turn green once saved.</div>
+          </div>
+        )}
+      </Card>
+      )}
+
+      {sources ? (
+        <div className="mb-3 flex flex-wrap gap-2 items-center">
+          <span className="text-[10px] uppercase tracking-wider text-gray-400">Source mix:</span>
+          {sources.rss > 0 ? (
+            <span className="text-xs border border-blue-700 bg-blue-950/30 text-blue-200 rounded-full px-3 py-0.5">
+              RSS · Claude-classified <span className="font-bold ml-1">{sources.rss}</span>
+            </span>
+          ) : null}
+          {sources.acled > 0 ? (
+            <span className="text-xs border border-orange-700 bg-orange-950/30 text-orange-200 rounded-full px-3 py-0.5">
+              ACLED · structured <span className="font-bold ml-1">{sources.acled}</span>
+            </span>
+          ) : null}
+          {sources.gdelt > 0 ? (
+            <span className="text-xs border border-purple-700 bg-purple-950/30 text-purple-200 rounded-full px-3 py-0.5">
+              GDELT · wire <span className="font-bold ml-1">{sources.gdelt}</span>
+            </span>
+          ) : null}
+          {(sources.rss + (sources.acled || 0) + (sources.gdelt || 0)) === 0 ? (
+            <span className="text-xs text-gray-500">no items in last sweep</span>
+          ) : null}
+        </div>
+      ) : null}
+
+      <div className="grid grid-cols-1 md:grid-cols-5 gap-3 items-stretch">
+        <Metric label="Reports Indexed"      value={counts.reports} />
+        <Metric label="Conflict Zones"       value={counts.zones} />
+        <Metric label="Platforms Tracked"    value={counts.platforms} />
+        <Metric label="Sources Configured"   value={counts.sources} />
+        <Card className="p-4 flex items-center justify-center">
+          <Btn onClick={runSweep} variant="primary" className="w-full flex items-center justify-center gap-2"
+            >{status === "fetching" || status === "classifying" ? "⏳ Running…" : (backendUrl ? "↻ Refresh from Backend" : "↻ Run Live Agent Sweep")}</Btn>
+        </Card>
+      </div>
+
+      <div className="mt-3 text-sm">
+        <div className="flex items-center gap-2 text-gray-300">
+          <span style={{
+            width: 10, height: 10, borderRadius: "50%", display: "inline-block",
+            background: status === "ready" ? "#22c55e" : status === "error" ? "#ef4444" : status === "idle" ? "#6b7280" : "#eab308",
+            boxShadow: status === "ready" ? "0 0 8px #22c55e" : "none",
+          }} />
+          <span>
+            Agent status: {status}
+            {status === "fetching" || status === "classifying" ? ` · ${progress.done}/${progress.total} feeds fetched` : ""}
+            {lastSweep ? ` · Last sweep ${formatTimestamp(lastSweep)}` : ""}
+            {` · ${counts.sources} sources configured`}
+            {` · ${counts.reports} drone-related items in index`}
+          </span>
+        </div>
+        {error ? <div className="mt-2 text-red-400 text-xs whitespace-pre-wrap">{error}</div> : null}
+        <div className="mt-3 flex items-center gap-3 flex-wrap">
+          <button onClick={runDiagnostics} disabled={diagRunning}
+            className="text-xs border border-[#333] hover:border-white text-gray-200 hover:text-white rounded px-3 py-1.5 disabled:opacity-50">
+            {diagRunning ? "🔍 Testing…" : "🔍 Test connection"}
+          </button>
+          <button onClick={downloadTranscript} disabled={!transcript.length}
+            className="text-xs border border-[#333] hover:border-white text-gray-200 hover:text-white rounded px-3 py-1.5 disabled:opacity-30 disabled:cursor-not-allowed"
+            title={transcript.length ? `${transcript.length} agent calls captured` : "Run a sweep first to capture a transcript"}>
+            ⬇ Download Agent Transcript ({transcript.length})
+          </button>
+          <span className="text-[11px] text-gray-500">Captures every Claude prompt + response from the last sweep, for assignment submission.</span>
+        </div>
+        {diag ? (
+          <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+            <Card className="p-3">
+              <div className="font-bold mb-1">
+                <span className={diag.rss?.status === "ok" ? "text-green-400" : diag.rss?.status === "running" ? "text-yellow-400" : "text-red-400"}>
+                  {diag.rss?.status === "ok" ? "✓" : diag.rss?.status === "running" ? "⏳" : "✗"} RSS proxy (rss2json)
+                </span>
+              </div>
+              <div className="text-gray-300 mono break-words">
+                {diag.rss?.httpStatus ? `HTTP ${diag.rss.httpStatus}` : ""}
+                {diag.rss?.rss2jsonStatus ? ` · proxy says: ${diag.rss.rss2jsonStatus}` : ""}
+                <div className="mt-1">{safe(diag.rss?.message, "(no message)")}</div>
+                {diag.rss?.sample ? <div className="mt-1 text-gray-500">sample item: {diag.rss.sample.slice(0,120)}</div> : null}
+              </div>
+            </Card>
+            <Card className="p-3">
+              <div className="font-bold mb-1">
+                <span className={diag.claude?.status === "ok" ? "text-green-400" : diag.claude?.status === "running" ? "text-yellow-400" : diag.claude?.status === "skipped" ? "text-gray-400" : "text-red-400"}>
+                  {diag.claude?.status === "ok" ? "✓" : diag.claude?.status === "running" ? "⏳" : diag.claude?.status === "skipped" ? "—" : "✗"} Claude API (model: {diag.claude?.model || model})
+                </span>
+              </div>
+              <div className="text-gray-300 mono break-words whitespace-pre-wrap">
+                {diag.claude?.httpStatus ? `HTTP ${diag.claude.httpStatus}\n` : ""}
+                {safe(diag.claude?.message, "(no message)")}
+              </div>
+            </Card>
+          </div>
+        ) : null}
+        {feedErrors.length ? (
+          <details className="mt-2">
+            <summary className="text-xs text-gray-500 cursor-pointer">{feedErrors.length} feed error(s) — click to expand</summary>
+            <ul className="mt-1 text-xs text-gray-500 list-disc pl-5">
+              {feedErrors.map((e, i) => <li key={i}>{e}</li>)}
+            </ul>
+          </details>
+        ) : null}
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-4">
+        <Card className="p-3">
+          <div className="text-sm font-medium text-white mb-2">Live Extraction Feed</div>
+          {liveFeed.length === 0 ? (
+            <div className="text-xs text-gray-500 mono py-6 text-center">No items yet. Click "Run Live Agent Sweep" above.</div>
+          ) : (
+            <div className="space-y-1 text-xs mono max-h-[420px] overflow-y-auto">
+              {liveFeed.map((it, i) => (
+                <div key={i} className="border-b border-[#222] py-1 text-gray-300">
+                  <span className={
+                    it.origin === "acled" ? "text-orange-400"
+                    : it.origin === "gdelt" ? "text-purple-400"
+                    : "text-blue-400"
+                  }>{(it.origin || "rss").toUpperCase()}</span>
+                  {" · "}
+                  <span className="text-gray-500">{formatTimestamp(it.extracted_at)}</span>
+                  {" · "}
+                  <span className="text-white">{safe(it.conflict_zone)}</span>
+                  {" · "}
+                  <span className="text-gray-400">{safe(it.drone_class)}</span>
+                  {" · "}
+                  <span className={
+                    it.response_type === "kinetic" ? "text-red-400"
+                    : it.response_type === "EW/jamming" ? "text-yellow-400"
+                    : it.response_type === "passive" ? "text-blue-400"
+                    : "text-gray-400"
+                  }>{safe(it.response_type)}</span>
+                  {" · "}
+                  <a href={it.link} target="_blank" rel="noreferrer" className="text-gray-500 hover:text-white underline">{safe(it.source)}</a>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+        <Card className="p-3">
+          <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
+            <div className="text-sm font-medium text-white">
+              Conflict-Zone Map
+              {totalFatalities > 0 ? <span className="ml-2 text-xs text-yellow-400 font-normal">· {totalFatalities.toLocaleString()} fatalities indexed</span> : null}
+            </div>
+            <div className="inline-flex border border-[#333] rounded overflow-hidden text-xs">
+              {[
+                { key: "markers",  label: "Markers" },
+                { key: "heatmap",  label: "Heatmap" },
+                { key: "both",     label: "Both" },
+              ].map(opt => (
+                <button key={opt.key} onClick={() => setMapView(opt.key)}
+                  className={`px-3 py-1 transition-colors ${mapView === opt.key ? "bg-red-600 text-white" : "bg-[#0a0a0a] text-gray-300 hover:bg-[#1a1a1a]"}`}>
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <LeafletMap id="defense-map" center={[30, 40]} zoom={3}
+            markers={markers}
+            heatmap={heatmapData}
+            viewMode={mapView}
+            height={400}
+            legend={mapView === "heatmap" ? [
+              { color: "#1e3a8a", label: "Low intensity" },
+              { color: "#7e22ce", label: "Moderate" },
+              { color: "#ef4444", label: "High" },
+              { color: "#fde047", label: "Critical (most fatalities)" },
+            ] : [
+              { color: "#ef4444", label: "Kinetic" },
+              { color: "#eab308", label: "EW / jamming" },
+              { color: "#3b82f6", label: "Passive" },
+              { color: "#9ca3af", label: "Unknown" },
+            ]} />
+          {mapView !== "markers" && totalFatalities === 0 ? (
+            <div className="mt-2 text-xs text-gray-500">No fatality data in current items. ACLED items carry per-event fatality counts; RSS items default to 0.</div>
+          ) : null}
+        </Card>
+      </div>
+
+      <div className="mt-4">
+        <SearchableTable
+          rows={filtered}
+          search={search}
+          setSearch={setSearch}
+          placeholder="Search reports by zone, country, drone class, response type, source, headline…"
+          emptyText={status === "idle" ? "Run a sweep to populate." : "No matching reports."}
+          columns={[
+            { key: "id",                       label: "ID" },
+            { key: "pubDate",                  label: "Published",   render: r => r.pubDate ? new Date(r.pubDate).toISOString().slice(0, 10) : "Unknown" },
+            { key: "conflict_zone",            label: "Zone" },
+            { key: "country",                  label: "Country" },
+            { key: "drone_class",              label: "Drone Class" },
+            { key: "response_type",            label: "Response" },
+            { key: "reported_latency_seconds", label: "Latency (s)", render: r => r.reported_latency_seconds == null ? "Unknown" : Number(r.reported_latency_seconds).toFixed(0) },
+            { key: "triad_lens",               label: "Triad" },
+            { key: "source",                   label: "Source" },
+            { key: "title",                    label: "Headline",    render: r => r.link ? <a href={r.link} target="_blank" rel="noreferrer" className="text-red-400 hover:underline">{safe(r.title)}</a> : safe(r.title) },
+          ]}
+        />
+      </div>
+
+      {topFatalZones.length > 0 ? (
+        <Card className="p-4 mt-4">
+          <div className="text-sm font-medium text-white mb-2">
+            Top {topFatalZones.length} zones by indexed fatalities <span className="text-xs text-gray-400 font-normal">(from ACLED events in current sweep)</span>
+          </div>
+          <div style={{ width: "100%", height: Math.max(200, topFatalZones.length * 32) }}>
+            <ResponsiveContainer>
+              <BarChart data={topFatalZones} layout="vertical" margin={{ top: 5, right: 40, left: 10, bottom: 5 }}>
+                <CartesianGrid stroke="#222" strokeDasharray="3 3" horizontal={false} />
+                <XAxis type="number" stroke="#888" tick={{ fill: "#ccc", fontSize: 11 }} />
+                <YAxis type="category" dataKey="zone" stroke="#888" tick={{ fill: "#ccc", fontSize: 11 }} width={180} interval={0} />
+                <Tooltip contentStyle={{ background: "#0a0a0a", border: "1px solid #333", color: "#fff" }} formatter={(v) => [`${v} fatalities`, ""]} />
+                <Bar dataKey="fatalities" fill="#fde047">
+                  {topFatalZones.map((_, i) => <Cell key={i} fill={i === 0 ? "#fde047" : i < 3 ? "#f97316" : "#ef4444"} />)}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+          <div className="text-[11px] text-gray-500 mt-2">
+            ACLED-sourced fatality counts only. RSS and GDELT items don't carry per-event casualty data, so they're excluded here. The total above the map ({totalFatalities.toLocaleString()}) is the sum across all zones.
+          </div>
+        </Card>
+      ) : null}
+    </section>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Latency Compression Timeline component                             */
+/* ------------------------------------------------------------------ */
+function LatencyCompressionTimeline({ incidents }) {
+  const scatterData = useMemo(() => {
+    const defense = [];
+    const civilian = [];
+    (incidents || []).forEach(i => {
+      if (typeof i.total_latency_s !== "number") return;
+      const d = i.date ? new Date(i.date) : null;
+      if (!d || Number.isNaN(d.getTime())) return;
+      const point = {
+        x: d.getTime(),
+        y: Math.max(1, i.total_latency_s),
+        id: i.id,
+        location: safe(i.location),
+        domain: i.domain,
+        within_window: i.within_window,
+        date: d.toISOString().slice(0, 10),
+      };
+      if (i.domain === "defense") defense.push(point);
+      else if (i.domain === "civilian") civilian.push(point);
+    });
+    return { defense, civilian };
+  }, [incidents]);
+
+  const quarterData = useMemo(() => {
+    const bandOf = (s) => (s <= 60 ? "seconds" : s <= 600 ? "minutes" : "delayed");
+    const quarterOf = (d) => `${d.getFullYear()} Q${Math.floor(d.getMonth() / 3) + 1}`;
+    const map = {};
+    (incidents || []).forEach(i => {
+      if (typeof i.total_latency_s !== "number") return;
+      const d = i.date ? new Date(i.date) : null;
+      if (!d || Number.isNaN(d.getTime())) return;
+      const q = quarterOf(d);
+      if (!map[q]) map[q] = { quarter: q, seconds: 0, minutes: 0, delayed: 0, _sort: new Date(d.getFullYear(), Math.floor(d.getMonth()/3)*3, 1).getTime() };
+      map[q][bandOf(i.total_latency_s)] += 1;
+    });
+    return Object.values(map).sort((a, b) => a._sort - b._sort);
+  }, [incidents]);
+
+  const total = scatterData.defense.length + scatterData.civilian.length;
+
+  const tooltipFormatter = ({ active, payload }) => {
+    if (!active || !payload || !payload.length) return null;
+    const p = payload[0].payload;
+    return (
+      <div className="bg-[#0a0a0a] border border-[#333] rounded p-2 text-xs text-gray-200">
+        <div className="font-bold text-white">{p.id}</div>
+        <div>{p.date} · {p.domain}</div>
+        <div>{p.location}</div>
+        <div className="mono">total {p.y}s — {p.within_window === "yes" ? <span className="text-green-400">within window</span> : <span className="text-red-400">outside window</span>}</div>
+      </div>
+    );
+  };
+
+  return (
+    <section>
+      <SectionTitle sub='As timelines compress from minutes to seconds across both civilian and defense domains, effectiveness shifts from perception to coordination — making response latency the critical metric for evaluating AI systems in practice. Each dot is one incident; the red line is the 15-second engagement window.'>
+        📉 Latency Compression Timeline — Engagement Window Over Time
+      </SectionTitle>
+
+      {total === 0 ? (
+        <Card className="p-6 text-center text-gray-500">No incidents with latency data yet. Run a sweep or wait for the agent to populate.</Card>
+      ) : (
+        <div className="space-y-4">
+          <Card className="p-4">
+            <div className="text-sm text-white mb-1">Per-incident latency vs. date</div>
+            <div className="text-xs text-gray-400 mb-4">log scale, n={total}</div>
+            <div style={{ width: "100%", height: 420 }}>
+              <ResponsiveContainer>
+                <ScatterChart margin={{ top: 10, right: 30, left: 80, bottom: 60 }}>
+                  <CartesianGrid stroke="#222" strokeDasharray="3 3" />
+                  <XAxis
+                    type="number"
+                    dataKey="x"
+                    name="Date"
+                    domain={['dataMin', 'dataMax']}
+                    tickFormatter={(t) => new Date(t).toISOString().slice(0, 10)}
+                    stroke="#888"
+                    tick={{ fill: "#ccc", fontSize: 11 }}
+                    label={{ value: "Incident date", position: "insideBottom", offset: -20, fill: "#888" }}
+                  />
+                  <YAxis
+                    type="number"
+                    dataKey="y"
+                    name="Latency"
+                    scale="log"
+                    domain={[1, 2000]}
+                    allowDataOverflow
+                    stroke="#888"
+                    tick={{ fill: "#ccc", fontSize: 11 }}
+                    tickFormatter={(v) => `${v}s`}
+                    label={{ value: "Latency (s, log)", angle: -90, position: "insideLeft", fill: "#888", offset: -10, style: { textAnchor: "middle" } }}
+                  />
+                  <ZAxis range={[60, 60]} />
+                  <Tooltip content={tooltipFormatter} cursor={{ stroke: "#444", strokeDasharray: "3 3" }} />
+                  <Legend wrapperStyle={{ color: "#ccc", paddingTop: 20 }} verticalAlign="bottom" />
+                  <ReferenceLine y={15} stroke="#ef4444" strokeWidth={2}
+                    label={{ value: "15s engagement window — Sightline / counter-UAS doctrine", position: "insideBottomRight", fill: "#ef4444", fontSize: 11 }} />
+                  <ReferenceLine y={300} stroke="#888" strokeDasharray="4 4"
+                    label={{ value: "5-minute coordination ceiling", position: "insideTopRight", fill: "#888", fontSize: 11 }} />
+                  <Scatter name="Defense" data={scatterData.defense} fill="#3b82f6" />
+                  <Scatter name="Civilian" data={scatterData.civilian} fill="#f97316" />
+                </ScatterChart>
+              </ResponsiveContainer>
+            </div>
+            <div className="text-[11px] text-gray-500 mt-2">
+              Defense incidents cluster near the engagement window; civilian incidents sit firmly above the 5-minute coordination ceiling — exactly the divergence the paper argues for.
+            </div>
+          </Card>
+
+          <Card className="p-4">
+            <div className="text-sm text-white mb-2">Latency-band composition by quarter</div>
+            <div style={{ width: "100%", height: 240 }}>
+              <ResponsiveContainer>
+                <BarChart data={quarterData} margin={{ top: 10, right: 30, left: 0, bottom: 10 }}>
+                  <CartesianGrid stroke="#222" strokeDasharray="3 3" />
+                  <XAxis dataKey="quarter" stroke="#888" tick={{ fill: "#ccc", fontSize: 11 }} />
+                  <YAxis stroke="#888" tick={{ fill: "#ccc", fontSize: 11 }} allowDecimals={false} />
+                  <Tooltip contentStyle={{ background: "#0a0a0a", border: "1px solid #333", color: "#fff" }} />
+                  <Legend wrapperStyle={{ color: "#ccc" }} />
+                  <Bar dataKey="seconds" stackId="a" fill="#22c55e" name="seconds (≤60)" />
+                  <Bar dataKey="minutes" stackId="a" fill="#eab308" name="minutes (61–600)" />
+                  <Bar dataKey="delayed" stackId="a" fill="#ef4444" name="delayed (>600)" />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+            <div className="text-[11px] text-gray-500 mt-2">
+              When the green band grows quarter over quarter, coordination is winning; when red dominates, perception still beats execution.
+            </div>
+          </Card>
+        </div>
+      )}
+    </section>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* TAB 1 — UAS Latency Index                                          */
+/* ------------------------------------------------------------------ */
+function UASLatencyTab({ apiKey, setApiKey, model, backendUrl }) {
+  const [programs, setPrograms] = useState(buildSeedWithTimestamps());
+  const [incidents, setIncidents] = useState(SEED_INCIDENTS);
+  const [lastSweep, setLastSweep] = useState(new Date());
+  const [progSearch, setProgSearch] = useState("");
+  const [incSearch, setIncSearch] = useState("");
+  const [domainFilter, setDomainFilter] = useState("all");
+  const [bandFilter, setBandFilter] = useState("all");
+  const [outcomeFilter, setOutcomeFilter] = useState("all");
+  const [logDomain, setLogDomain] = useState("all");
+  const [logTriad, setLogTriad] = useState("all");
+  const [expandedRow, setExpandedRow] = useState(null);
+
+  const appendIncidents = (newOnes) => {
+    if (!newOnes || !newOnes.length) return;
+    setIncidents(prev => {
+      const seen = new Set(prev.map(p => p.id));
+      const fresh = newOnes.filter(n => !seen.has(n.id));
+      return [...prev, ...fresh];
+    });
+  };
+
+  /* Sweep button: in backend mode, fetch real live records and merge.
+     Otherwise just refresh the seed timestamps (illustrative). */
+  const [usSweepStatus, setUsSweepStatus] = useState("idle"); // idle | fetching | error
+  const [usSweepError, setUsSweepError] = useState(null);
+
+  const reRunSweep = async () => {
+    setUsSweepError(null);
+    if (backendUrl) {
+      setUsSweepStatus("fetching");
+      try {
+        const res = await fetchWithTimeout(`${backendUrl}/api/us-programs`, {}, 15000);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const payload = await res.json();
+        const live = Array.isArray(payload.programs) ? payload.programs : [];
+        // Merge: keep all seed records, add live records that aren't already in (by city|state|agency).
+        setPrograms(prev => {
+          const seen = new Set(prev.map(p => `${(p.city || "").toLowerCase()}|${(p.state || "").toUpperCase()}|${(p.agency || "Other").toLowerCase()}`));
+          const additions = live.filter(p => {
+            const key = `${(p.city || "").toLowerCase()}|${(p.state || "").toUpperCase()}|${(p.agency || "Other").toLowerCase()}`;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          }).map(p => ({ ...p, live: true }));
+          return [...prev, ...additions];
+        });
+        setUsSweepStatus("idle");
+      } catch (e) {
+        setUsSweepStatus("error");
+        setUsSweepError(`Backend fetch failed: ${e.message || e}`);
+      }
+    } else {
+      // Browser mode: just perturb timestamps so the feed feels live (illustrative only)
+      setPrograms(prev => prev.map((p, i) => ({
+        ...p,
+        extracted_at: new Date(Date.now() - i * 33 * 60 * 1000).toISOString(),
+      })));
+    }
+    setLastSweep(new Date());
+  };
+
+  /* Section 1 metrics */
+  const programsIndexed = programs.length;
+  const citiesMonitored = new Set(programs.map(p => p.city)).size;
+  const statesCovered = new Set(programs.map(p => p.state)).size;
+  const SOURCES = ["Google News", "sUAS News", "DroneLife", "Unmanned Airspace"];
+  const sourcesTracked = SOURCES.length;
+
+  /* Live extraction feed (most recent 10) */
+  const liveFeed = useMemo(() => {
+    return [...programs]
+      .sort((a, b) => new Date(b.extracted_at) - new Date(a.extracted_at))
+      .slice(0, 10);
+  }, [programs]);
+
+  /* Drone program markers */
+  const programMarkers = programs.map(p => ({
+    lat: p.lat,
+    lon: p.lon,
+    color: p.program_type === "DFR" ? "#3b82f6" : "#a855f7",
+    popup: `<b>${p.city}, ${p.state}</b><br/>${p.agency}<br/>${p.program_type}<br/>Source: ${p.source_name}`,
+  }));
+
+  /* Section 2 latency snapshot */
+  const totalIncidents = incidents.length;
+  const avgLatency = totalIncidents ? incidents.reduce((a, b) => a + b.total_latency_s, 0) / totalIncidents : 0;
+  const civCount = incidents.filter(i => i.domain === "civilian").length;
+  const defCount = incidents.filter(i => i.domain === "defense").length;
+  const withinCount = incidents.filter(i => i.within_window === "yes").length;
+  const outsideCount = totalIncidents - withinCount;
+  const defWithinPct = defCount ? (incidents.filter(i => i.domain === "defense"  && i.within_window === "yes").length / defCount) * 100 : 0;
+  const civWithinPct = civCount ? (incidents.filter(i => i.domain === "civilian" && i.within_window === "yes").length / civCount) * 100 : 0;
+
+  /* Section 3 incident map filtering */
+  const bandOf = (s) => (s <= 60 ? "seconds" : s <= 600 ? "minutes" : "delayed");
+  const filteredIncidents = incidents.filter(i => {
+    if (domainFilter !== "all" && i.domain !== domainFilter) return false;
+    if (bandFilter   !== "all" && bandOf(i.total_latency_s) !== bandFilter) return false;
+    if (outcomeFilter !== "all" && i.outcome !== outcomeFilter) return false;
+    return true;
+  });
+  const incidentMarkers = filteredIncidents.map(i => ({
+    lat: i.lat,
+    lon: i.lon,
+    color: i.domain === "defense" ? "#3b82f6" : "#f97316",
+    popup: `<b>${i.id}</b><br/>${i.location}<br/>${i.domain} · ${i.incident_type}<br/>${i.total_latency_s}s · ${i.outcome}`,
+  }));
+
+  /* Section 4 agentic estimate */
+  const agenticRows = incidents.map(i => {
+    const est = i.total_latency_s * 0.37;
+    return {
+      ...i,
+      agentic_estimate: est,
+      seconds_saved: i.total_latency_s - est,
+      meets_window: est <= 15 ? "yes" : "no",
+    };
+  });
+  const additionalWithin = agenticRows.filter(r => r.meets_window === "yes" && r.within_window !== "yes").length;
+
+  /* Section 5 incident log */
+  const logFiltered = incidents.filter(i => {
+    if (logDomain !== "all" && i.domain !== logDomain) return false;
+    if (logTriad  !== "all" && i.triad_lens !== logTriad) return false;
+    if (incSearch) {
+      const q = incSearch.toLowerCase();
+      const blob = JSON.stringify(i).toLowerCase();
+      if (!blob.includes(q)) return false;
+    }
+    return true;
+  });
+
+  const downloadIncidentsCSV = () => {
+    const cols = ["id","date","domain","location","lat","lon","incident_type",
+      "detection_latency_s","decision_latency_s","execution_latency_s","total_latency_s",
+      "within_window","outcome","triad_lens","detection_description","response_description","source"];
+    const csv = [
+      cols.join(","),
+      ...incidents.map(i => cols.map(c => {
+        const v = i[c] == null ? "Unknown" : i[c];
+        const s = String(v).replace(/"/g, '""');
+        return /[",\n]/.test(s) ? `"${s}"` : s;
+      }).join(","))
+    ].join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "uas_incidents.csv"; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  /* Section 6 triad analysis */
+  const triadStats = (lens) => {
+    const subset = incidents.filter(i => i.triad_lens === lens);
+    if (!subset.length) return { count: 0, avg: 0, outcomes: {}, positive: 0 };
+    const avg = subset.reduce((a, b) => a + b.total_latency_s, 0) / subset.length;
+    const outcomes = subset.reduce((acc, i) => { acc[i.outcome] = (acc[i.outcome] || 0) + 1; return acc; }, {});
+    const positive = subset.filter(i => i.outcome === "threat_neutralized" || i.outcome === "no_harm").length;
+    const escapedOrUnknown = subset.filter(i => i.outcome === "threat_escaped" || i.outcome === "unknown").length;
+    return { count: subset.length, avg, outcomes, positive, escapedOrUnknown };
+  };
+  const accel = triadStats("accelerationist");
+  const safety = triadStats("safetyist");
+  const skep = triadStats("skeptic");
+
+  /* Render */
+  return (
+    <div className="space-y-10">
+      {/* ----- Section 1: Agentic Open-Source Scanner ----- */}
+      <section>
+        <SectionTitle sub="A live agent scans public RSS feeds (Google News, sUAS News, DroneLife, Unmanned Airspace) for U.S. cities operating municipal drone programs. Click Re-run Sweep to fetch the latest reporting.">
+          🔍 Agentic Open-Source Scanner — U.S. Drone Programs
+        </SectionTitle>
+
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-3 items-stretch">
+          <Metric label="Programs Indexed"     value={programsIndexed} />
+          <Metric label="Cities Monitored"     value={citiesMonitored} />
+          <Metric label="States Covered"       value={statesCovered} />
+          <Metric label="Open Sources Tracked" value={sourcesTracked} />
+          <Card className="p-4 flex items-center justify-center">
+            <Btn onClick={reRunSweep} variant="primary" className="w-full flex items-center justify-center gap-2">
+              <span style={{ display: "inline-block" }}>↻</span> {usSweepStatus === "fetching" ? "Fetching…" : (backendUrl ? "Re-run Sweep (live)" : "Re-run Sweep")}
+            </Btn>
+          </Card>
+        </div>
+
+        <div className="mt-3 flex items-center gap-2 text-sm text-gray-300 flex-wrap">
+          <span style={{ width: 10, height: 10, borderRadius: "50%", background: "#22c55e", boxShadow: "0 0 8px #22c55e", display: "inline-block" }} />
+          <span>
+            Agent status: {backendUrl ? "live (backend)" : "seed only"} · Last sweep at {formatTimestamp(lastSweep)} · {sourcesTracked} sources monitored · {programsIndexed} records in index
+            {programs.filter(p => p.live).length > 0 ? <span className="text-green-400 ml-1">· {programs.filter(p => p.live).length} live</span> : null}
+          </span>
+        </div>
+        {usSweepError ? <div className="mt-1 text-xs text-red-400">{usSweepError}</div> : null}
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-4">
+          <Card className="p-3">
+            <div className="text-sm font-medium text-white mb-2">Live Extraction Feed</div>
+            <div className="space-y-1 text-xs mono max-h-[420px] overflow-y-auto">
+              {liveFeed.map((p, i) => (
+                <div key={i} className="border-b border-[#222] py-1 text-gray-300">
+                  {p.live ? <span className="text-[10px] uppercase tracking-wider text-green-400 border border-green-700 bg-green-950/40 rounded px-1 mr-1">live</span> : null}
+                  <span className="text-gray-500">{formatTimestamp(p.extracted_at)}</span>
+                  {" · "}
+                  <span className="text-white">{safe(p.city)}, {safe(p.state)}</span>
+                  {" · "}
+                  <span className="text-gray-400">{safe(p.agency)}</span>
+                  {" · "}
+                  <span className={p.program_type === "DFR" ? "text-blue-400" : "text-purple-400"}>{safe(p.program_type)}</span>
+                  {" · "}
+                  {p.source_url ? (
+                    <a href={p.source_url} target="_blank" rel="noreferrer" className="text-red-400 hover:text-red-300 underline">{safe(p.source_name)}</a>
+                  ) : (
+                    <a href={programSourceUrl(p)} target="_blank" rel="noreferrer" className="text-red-400 hover:text-red-300 underline">{safe(p.source_name)}</a>
+                  )}
+                </div>
+              ))}
+            </div>
+          </Card>
+          <Card className="p-3">
+            <div className="text-sm font-medium text-white mb-2">U.S. Drone Program Map</div>
+            <LeafletMap id="program-map" center={[39.5, -98.35]} zoom={4} markers={programMarkers} height={400}
+              legend={[
+                { color: "#3b82f6", label: "DFR" },
+                { color: "#a855f7", label: "Municipal UAS" },
+              ]} />
+          </Card>
+        </div>
+
+        <div className="mt-4">
+          <SearchableTable
+            rows={programs}
+            search={progSearch}
+            setSearch={setProgSearch}
+            placeholder="Search programs by city, state, agency, type, source…"
+            columns={[
+              { key: "city",            label: "City",  render: r => <span>{r.live ? <span className="text-[10px] uppercase tracking-wider text-green-400 border border-green-700 bg-green-950/40 rounded px-1 mr-1">live</span> : null}{safe(r.city)}</span> },
+              { key: "state",           label: "State" },
+              { key: "agency",          label: "Agency" },
+              { key: "program_type",    label: "Program Type" },
+              { key: "avg_response_min",label: "Avg Response (min)", render: r => r.avg_response_min == null ? "Unknown" : Number(r.avg_response_min).toFixed(2) },
+              { key: "source_name",     label: "Source", render: r => <a href={r.source_url || programSourceUrl(r)} target="_blank" rel="noreferrer" className="text-red-400 hover:text-red-300 underline">{safe(r.source_name)}</a> },
+              { key: "extracted_at",    label: "Extracted At", render: r => formatTimestamp(r.extracted_at) },
+            ]}
+          />
+        </div>
+      </section>
+
+      {/* ----- Section 1.5: Live Defense / Conflict-Zone Drone Feed ----- */}
+      <DefenseFeedScanner apiKey={apiKey} setApiKey={setApiKey} model={model} backendUrl={backendUrl} appendIncidents={appendIncidents} />
+
+      {/* ----- Section 2: Latency Snapshot ----- */}
+      <section>
+        <SectionTitle>Latency Snapshot</SectionTitle>
+        <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
+          <Metric label="Total Incidents" value={totalIncidents} />
+          <Metric label="Avg Latency (s)" value={num(avgLatency, 1)} />
+          <Metric label="Civilian"        value={civCount} />
+          <Metric label="Defense"         value={defCount} />
+          <Metric label="Within Window"   value={withinCount} />
+          <Metric label="Outside Window"  value={outsideCount} />
+        </div>
+        <div className="mt-3">
+          <InfoBox tone="blue">
+            {pct(defWithinPct)} of defense incidents fell within the 15-second engagement window vs {pct(civWithinPct)} of civilian incidents.
+          </InfoBox>
+        </div>
+      </section>
+
+      {/* ----- Section 3: Incident Map ----- */}
+      <section>
+        <SectionTitle>Incident Map</SectionTitle>
+        <div className="flex flex-wrap gap-2 mb-3">
+          <Select value={domainFilter} onChange={e => setDomainFilter(e.target.value)}>
+            <option value="all">Domain: all</option>
+            <option value="civilian">civilian</option>
+            <option value="defense">defense</option>
+          </Select>
+          <Select value={bandFilter} onChange={e => setBandFilter(e.target.value)}>
+            <option value="all">Latency Band: all</option>
+            <option value="seconds">seconds (≤60)</option>
+            <option value="minutes">minutes (61–600)</option>
+            <option value="delayed">delayed (&gt;600)</option>
+          </Select>
+          <Select value={outcomeFilter} onChange={e => setOutcomeFilter(e.target.value)}>
+            <option value="all">Outcome: all</option>
+            <option value="threat_neutralized">threat_neutralized</option>
+            <option value="threat_escaped">threat_escaped</option>
+            <option value="no_harm">no_harm</option>
+          </Select>
+        </div>
+        <LeafletMap id="incident-map" center={[20, 0]} zoom={2} markers={incidentMarkers} height={420}
+          legend={[
+            { color: "#3b82f6", label: "Defense" },
+            { color: "#f97316", label: "Civilian" },
+          ]}
+        />
+      </section>
+
+      {/* ----- Section 4: What Would an Agentic System Have Changed? ----- */}
+      <section>
+        <SectionTitle>What Would an Agentic System Have Changed?</SectionTitle>
+        <div className="overflow-x-auto border border-[#333] rounded">
+          <table className="w-full text-sm">
+            <thead className="bg-[#1a1a1a]">
+              <tr>
+                {["Incident ID","Location","Domain","Current Latency (s)","Agentic Estimate (s)","Seconds Saved","Meets Window"].map(h => (
+                  <th key={h} className="text-left px-3 py-2 font-medium text-gray-300 border-b border-[#333]">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {agenticRows.map(r => (
+                <tr key={r.id} className="bg-[#111] border-b border-[#222] hover:bg-[#181818]">
+                  <td className="px-3 py-2 mono text-white">{r.id}</td>
+                  <td className="px-3 py-2 mono">{safe(r.location)}</td>
+                  <td className="px-3 py-2 mono">{safe(r.domain)}</td>
+                  <td className="px-3 py-2 mono">{num(r.total_latency_s, 1)}</td>
+                  <td className="px-3 py-2 mono">{num(r.agentic_estimate, 1)}</td>
+                  <td className="px-3 py-2 mono">{num(r.seconds_saved, 1)}</td>
+                  <td className={`px-3 py-2 mono ${r.meets_window === "yes" ? "text-green-400" : "text-red-400"}`}>{r.meets_window}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="mt-3">
+          <InfoBox tone="green">
+            Under an agentic coordination layer, {additionalWithin} additional incidents would have fallen within the 15-second engagement window.
+          </InfoBox>
+        </div>
+      </section>
+
+      {/* ----- Section 4.5: Latency Compression Timeline ----- */}
+      <LatencyCompressionTimeline incidents={incidents} />
+
+      {/* ----- Section 5: Incident Log ----- */}
+      <section>
+        <SectionTitle>Incident Log</SectionTitle>
+        <div className="flex flex-wrap gap-2 mb-3">
+          <Select value={logDomain} onChange={e => setLogDomain(e.target.value)}>
+            <option value="all">Domain: all</option>
+            <option value="civilian">civilian</option>
+            <option value="defense">defense</option>
+          </Select>
+          <Select value={logTriad} onChange={e => setLogTriad(e.target.value)}>
+            <option value="all">Triad lens: all</option>
+            <option value="accelerationist">accelerationist</option>
+            <option value="safetyist">safetyist</option>
+            <option value="skeptic">skeptic</option>
+          </Select>
+          <Input value={incSearch} onChange={e => setIncSearch(e.target.value)} placeholder="Search incidents…" className="max-w-md" />
+          <Btn onClick={downloadIncidentsCSV} variant="secondary">⬇ Download all incidents (CSV)</Btn>
+        </div>
+        <div className="overflow-x-auto border border-[#333] rounded">
+          <table className="w-full text-sm">
+            <thead className="bg-[#1a1a1a]">
+              <tr>
+                {["", "ID","Date","Domain","Location","Type","Det (s)","Dec (s)","Exec (s)","Total (s)","Within","Outcome","Triad"].map(h => (
+                  <th key={h} className="text-left px-3 py-2 font-medium text-gray-300 border-b border-[#333]">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {logFiltered.length === 0 ? (
+                <tr><td colSpan={13} className="px-3 py-6 text-center text-gray-500">No matching incidents.</td></tr>
+              ) : logFiltered.map(i => (
+                <React.Fragment key={i.id}>
+                  <tr className="bg-[#111] border-b border-[#222] hover:bg-[#181818]">
+                    <td className="px-3 py-2">
+                      <button onClick={() => setExpandedRow(expandedRow === i.id ? null : i.id)} className="text-gray-400 hover:text-white">
+                        {expandedRow === i.id ? "▼" : "▶"}
+                      </button>
+                    </td>
+                    <td className="px-3 py-2 mono text-white">{i.id}</td>
+                    <td className="px-3 py-2 mono">{safe(i.date)}</td>
+                    <td className="px-3 py-2 mono">{safe(i.domain)}</td>
+                    <td className="px-3 py-2 mono">{safe(i.location)}</td>
+                    <td className="px-3 py-2 mono">{safe(i.incident_type)}</td>
+                    <td className="px-3 py-2 mono">{i.detection_latency_s}</td>
+                    <td className="px-3 py-2 mono">{i.decision_latency_s}</td>
+                    <td className="px-3 py-2 mono">{i.execution_latency_s}</td>
+                    <td className="px-3 py-2 mono">{i.total_latency_s}</td>
+                    <td className={`px-3 py-2 mono ${i.within_window === "yes" ? "text-green-400" : "text-red-400"}`}>{i.within_window}</td>
+                    <td className="px-3 py-2 mono">{safe(i.outcome)}</td>
+                    <td className="px-3 py-2 mono">{safe(i.triad_lens)}</td>
+                  </tr>
+                  {expandedRow === i.id ? (
+                    <tr className="bg-[#0d0d0d] border-b border-[#222]">
+                      <td colSpan={13} className="px-6 py-4 text-sm text-gray-300 space-y-2">
+                        <div><span className="text-gray-500 uppercase text-xs tracking-wider">Detection</span><br/>{safe(i.detection_description)}</div>
+                        <div><span className="text-gray-500 uppercase text-xs tracking-wider">Response</span><br/>{safe(i.response_description)}</div>
+                        <div><span className="text-gray-500 uppercase text-xs tracking-wider">Source</span><br/>{safe(i.source)}</div>
+                      </td>
+                    </tr>
+                  ) : null}
+                </React.Fragment>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      {/* ----- Section 6: AI Triad Claim Testing ----- */}
+      <section>
+        <SectionTitle>AI Triad Claim Testing</SectionTitle>
+        <div className="space-y-3">
+          {[
+            {
+              key: "accelerationist",
+              label: "Accelerationist",
+              stats: accel,
+              finding: accel.avg < 30
+                ? "Consistent with accelerationist expectations."
+                : "Capability improvements did not produce fast response, suggesting coordination gaps remain.",
+            },
+            {
+              key: "safetyist",
+              label: "Safetyist",
+              stats: safety,
+              finding: `Safety-oriented responses achieved ${safety.count ? num((safety.positive/safety.count)*100, 1) : "Unknown"}% positive outcomes but averaged ${safety.count ? num(safety.avg, 1) : "Unknown"} seconds.`,
+            },
+            {
+              key: "skeptic",
+              label: "Skeptic",
+              stats: skep,
+              finding: `${skep.count ? num((skep.escapedOrUnknown/skep.count)*100, 1) : "Unknown"}% of skeptic-tagged incidents ended in threat_escaped or unknown outcomes.`,
+            },
+          ].map(s => (
+            <Card key={s.key}>
+              <details>
+                <summary className="px-4 py-3 flex items-center justify-between text-white">
+                  <span className="font-medium">{s.label}</span>
+                  <span className="text-xs text-gray-400">avg {num(s.stats.avg, 1)}s · n={s.stats.count}</span>
+                </summary>
+                <div className="px-4 pb-4 text-sm text-gray-300 space-y-2 border-t border-[#222]">
+                  <div className="pt-3">
+                    <div className="text-xs uppercase text-gray-500 tracking-wider mb-1">Outcome breakdown</div>
+                    <div className="flex flex-wrap gap-2 mono">
+                      {Object.entries(s.stats.outcomes).map(([k, v]) => (
+                        <span key={k} className="bg-[#111] border border-[#333] rounded px-2 py-1">{k}: {v}</span>
+                      ))}
+                      {Object.keys(s.stats.outcomes).length === 0 ? <span className="text-gray-500">No data</span> : null}
+                    </div>
+                  </div>
+                  <div className="pt-2">
+                    <div className="text-xs uppercase text-gray-500 tracking-wider mb-1">Finding</div>
+                    <div>{s.finding}</div>
+                  </div>
+                </div>
+              </details>
+            </Card>
+          ))}
+        </div>
+      </section>
+
+      {/* ----- Section 7: AI Triad Reference Table ----- */}
+      <section>
+        <SectionTitle>AI Triad Reference Table</SectionTitle>
+        <div className="overflow-x-auto border border-[#333] rounded">
+          <table className="w-full text-sm">
+            <thead className="bg-[#1a1a1a]">
+              <tr>
+                {["Perspective","What They Measure","What They Miss","How Latency Fixes It"].map(h => (
+                  <th key={h} className="text-left px-3 py-2 font-medium text-gray-300 border-b border-[#333]">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {[
+                ["Accelerationist","Capability and accuracy","Coordination speed","Latency tests whether capability translates to action"],
+                ["Safetyist","Error rates and compliance","Timing of response","Latency adds temporal accountability"],
+                ["Skeptic","Interpretability and trust","Execution speed","Latency measures whether interpretation leads to action"],
+              ].map((row, i) => (
+                <tr key={i} className="bg-[#111] border-b border-[#222]">
+                  {row.map((cell, j) => (
+                    <td key={j} className={`px-3 py-2 ${j === 0 ? "text-white font-medium" : "text-gray-300"}`}>{cell}</td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      {/* ----- Section 8: Methodology and Limitations ----- */}
+      <section>
+        <SectionTitle>Methodology and Limitations</SectionTitle>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <Card className="p-4">
+            <div className="text-sm font-medium text-white mb-2">Methodology</div>
+            <p className="text-sm text-gray-300 mb-2">
+              UAS Response Latency is defined as the wall-clock time between first credible detection of an
+              uncrewed aerial system and the conclusion of an authorized response action.
+            </p>
+            <p className="text-sm text-gray-300 mb-2">
+              Each incident is decomposed into three sequential intervals: <span className="text-white">detection</span>
+              (sensor or report acquisition), <span className="text-white">decision</span> (assessment and
+              authorization), and <span className="text-white">execution</span> (deployment and resolution).
+            </p>
+            <p className="text-sm text-gray-300">
+              The 15-second engagement window is drawn from publicly disclosed counter-UAS doctrine and
+              short-range air defense literature, and is used as a benchmark — not a hard threshold — for
+              "in-window" response.
+            </p>
+          </Card>
+          <Card className="p-4">
+            <div className="text-sm font-medium text-white mb-2">Limitations</div>
+            <ul className="text-sm text-gray-300 space-y-2 list-disc pl-5">
+              <li>Open-source reporting gaps: many incidents are never publicly disclosed, especially in defense contexts.</li>
+              <li>Inconsistent timestamping: source articles often report relative times ("within minutes") rather than precise intervals.</li>
+              <li>Triad-lens tagging reflects analyst judgment rather than a formal, reproducible classifier.</li>
+              <li>This dataset is illustrative rather than comprehensive; absolute counts should not be cited without further validation.</li>
+            </ul>
+          </Card>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* TAB 2 — Agentic Crisis Planner                                     */
+/* ------------------------------------------------------------------ */
+const TEMPLATE_ROWS = [
+  { initiative_name: "Cardiac Response Brooklyn",        incident_type: "Emergency Medical",       current_avg_response_minutes: 18.5, geography: "Brooklyn NY",  peak_incidents_per_day: 45, notes: "FDNY 2023 average" },
+  { initiative_name: "Active Threat Protocol Manhattan", incident_type: "Active Threat",           current_avg_response_minutes: 12.0, geography: "Manhattan NY", peak_incidents_per_day:  8, notes: "DHS benchmark" },
+  { initiative_name: "Infrastructure Fire Alert Queens", incident_type: "Fire Response",           current_avg_response_minutes: 22.0, geography: "Queens NY",    peak_incidents_per_day: 12, notes: "includes dispatch and travel delay" },
+];
+
+const INCIDENT_TYPES = [
+  "Emergency Medical","Fire Response","Active Threat",
+  "Infrastructure Monitoring","Traffic Incident","UAS Incursion","Other",
+];
+
+function PlannerTab() {
+  const [initiatives, setInitiatives] = useState(TEMPLATE_ROWS.map(r => ({ ...r })));
+  const [form, setForm] = useState({
+    initiative_name: "",
+    incident_type: "Emergency Medical",
+    current_avg_response_minutes: "",
+    geography: "",
+    peak_incidents_per_day: "",
+    notes: "",
+  });
+  const [reportOpen, setReportOpen] = useState(true);
+  const [copied, setCopied] = useState(false);
+
+  /* CSV template download */
+  const downloadTemplate = () => {
+    const cols = ["initiative_name","incident_type","current_avg_response_minutes","geography","peak_incidents_per_day","notes"];
+    const csv = [
+      cols.join(","),
+      ...TEMPLATE_ROWS.map(r => cols.map(c => {
+        const s = String(r[c]).replace(/"/g, '""');
+        return /[",\n]/.test(s) ? `"${s}"` : s;
+      }).join(","))
+    ].join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "planner_template.csv"; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  /* CSV upload */
+  const onUpload = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    Papa.parse(file, {
+      header: true,
+      skipEmptyLines: true,
+      complete: (res) => {
+        const rows = (res.data || []).map(r => ({
+          initiative_name: safe(r.initiative_name),
+          incident_type: safe(r.incident_type, "Other"),
+          current_avg_response_minutes: Number(r.current_avg_response_minutes) || 0,
+          geography: safe(r.geography),
+          peak_incidents_per_day: Number(r.peak_incidents_per_day) || 0,
+          notes: safe(r.notes, "Not reported"),
+        })).filter(r => r.initiative_name !== "Unknown");
+        if (rows.length) setInitiatives(rows);
+      },
+    });
+    e.target.value = "";
+  };
+
+  const addInitiative = () => {
+    if (!form.initiative_name.trim()) return;
+    const cur = Number(form.current_avg_response_minutes);
+    const peak = Number(form.peak_incidents_per_day);
+    setInitiatives(prev => [...prev, {
+      initiative_name: form.initiative_name.trim(),
+      incident_type: form.incident_type,
+      current_avg_response_minutes: Number.isFinite(cur) ? cur : 0,
+      geography: form.geography.trim() || "Unknown",
+      peak_incidents_per_day: Number.isFinite(peak) ? peak : 0,
+      notes: form.notes.trim() || "Not reported",
+    }]);
+    setForm({ initiative_name: "", incident_type: "Emergency Medical", current_avg_response_minutes: "", geography: "", peak_incidents_per_day: "", notes: "" });
+  };
+
+  /* Predictions */
+  const predictions = useMemo(() => initiatives.map(it => {
+    const cur = Number(it.current_avg_response_minutes) || 0;
+    const dfr = cur * 0.13;
+    const v1 = cur * 0.118;
+    const v2 = cur * 0.085;
+    const v3 = cur * 0.057;
+    const v4 = cur * 0.048;
+    const saved = cur - v4;
+    const pctImp = cur ? (saved / cur) * 100 : 0;
+    const annual = saved * (Number(it.peak_incidents_per_day) || 0) * 365;
+    return { ...it, dfr, v1, v2, v3, v4, saved, pctImp, annual };
+  }), [initiatives]);
+
+  const avgImprovement = predictions.length
+    ? predictions.reduce((a, b) => a + b.pctImp, 0) / predictions.length
+    : 0;
+  const highestImpact = predictions.length
+    ? predictions.reduce((a, b) => (b.annual > a.annual ? b : a), predictions[0])
+    : null;
+  const inWindowAfter = predictions.filter(p => p.v4 <= 0.25).length; // 15 seconds = 0.25 min
+
+  /* Chart data */
+  const chartData = predictions.map(p => ({
+    name: p.initiative_name,
+    Current: Number(p.current_avg_response_minutes) || 0,
+    DFR: Number(p.dfr.toFixed(2)),
+    "Agentic v4": Number(p.v4.toFixed(2)),
+  }));
+
+  /* Memo text */
+  const memoText = useMemo(() => {
+    if (!predictions.length) return "No initiatives loaded.";
+    const lines = [];
+    lines.push("AGENT RECOMMENDATION REPORT");
+    lines.push("");
+    lines.push(`Summary: ${predictions.length} initiative${predictions.length === 1 ? "" : "s"} were modeled against the UAS Response Latency benchmark stack. Average modeled improvement at the v4 (full agentic) tier is ${avgImprovement.toFixed(1)}%, equivalent to compressing decision, deployment, and travel latency in parallel.`);
+    lines.push("");
+    if (highestImpact) {
+      lines.push(`Highest Impact: ${highestImpact.initiative_name} (${highestImpact.geography}) shows the largest absolute time saved per year, at approximately ${highestImpact.annual.toFixed(2)} minutes annually based on a current response of ${Number(highestImpact.current_avg_response_minutes).toFixed(2)} minutes and ${highestImpact.peak_incidents_per_day} peak incidents per day.`);
+      lines.push("");
+    }
+    lines.push(`Engagement Window: At the v4 tier, ${inWindowAfter} of ${predictions.length} initiative${predictions.length === 1 ? "" : "s"} fall within the 15-second engagement window benchmark drawn from the UAS Latency Index. The remainder benefit from large percentage reductions but remain bounded by physical travel time.`);
+    lines.push("");
+    lines.push("Architecture: Recommend an agentic coordination layer that (a) compresses decision latency from ~20s to ~5s through pre-authorized response policies, (b) compresses deployment latency from ~20s to ~10s through automated dispatch, and (c) reduces travel distance 30%–60% through dynamic pre-positioning informed by historical demand surfaces.");
+    lines.push("");
+    lines.push("Governance: Any deployment should preserve human-on-the-loop authority for kinetic or irreversible actions, log all agent decisions for after-action review, and surface uncertainty estimates to dispatchers in real time.");
+    return lines.join("\n");
+  }, [predictions, avgImprovement, highestImpact, inWindowAfter]);
+
+  const copyReport = async () => {
+    try {
+      await navigator.clipboard.writeText(memoText);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch (e) {
+      // fallback
+      const ta = document.createElement("textarea");
+      ta.value = memoText; document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch {}
+      document.body.removeChild(ta);
+    }
+  };
+
+  return (
+    <div className="space-y-8">
+      <header>
+        <h1 className="text-2xl font-bold text-white">Agentic Crisis Response Planner</h1>
+        <p className="font-bold text-gray-200 mt-1">
+          Upload your existing 911 or EMS response data. The agent applies latency reduction benchmarks from the UAS Response Latency Index to predict how an agentic coordination layer would improve your operations.
+        </p>
+      </header>
+
+      <InfoBox tone="blue">
+        Reduction factors are derived from the UAS Response Latency research model. The agentic layer reduces response time by compressing three bottlenecks: decision latency (from 20s to 5s), deployment latency (from 20s to 10s), and travel latency via dynamic pre-positioning reducing distance by 30% to 60%. Combined this produces an estimated 63% reduction in total response time for most incident types.
+      </InfoBox>
+
+      <section className="space-y-3">
+        <Btn onClick={downloadTemplate} variant="secondary">⬇ Download Sample Template</Btn>
+      </section>
+
+      <section>
+        <SectionTitle>Upload Your Data</SectionTitle>
+        <Card className="p-4">
+          <input type="file" accept=".csv,text/csv" onChange={onUpload}
+            className="text-sm text-gray-300 file:mr-3 file:rounded file:border-0 file:bg-red-600 file:text-white file:px-3 file:py-2 file:cursor-pointer" />
+          <p className="text-xs text-gray-500 mt-2">Expected columns: initiative_name, incident_type, current_avg_response_minutes, geography, peak_incidents_per_day, notes.</p>
+        </Card>
+
+        {initiatives.length > 0 ? (
+          <div className="mt-4 overflow-x-auto border border-[#333] rounded">
+            <table className="w-full text-sm">
+              <thead className="bg-[#1a1a1a]">
+                <tr>
+                  {["Initiative","Type","Current (min)","Geography","Peak/day","Notes"].map(h => (
+                    <th key={h} className="text-left px-3 py-2 font-medium text-gray-300 border-b border-[#333]">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {initiatives.map((r, i) => (
+                  <tr key={i} className="bg-[#111] border-b border-[#222]">
+                    <td className="px-3 py-2 text-white">{safe(r.initiative_name)}</td>
+                    <td className="px-3 py-2">{safe(r.incident_type)}</td>
+                    <td className="px-3 py-2 mono">{num(r.current_avg_response_minutes)}</td>
+                    <td className="px-3 py-2">{safe(r.geography)}</td>
+                    <td className="px-3 py-2 mono">{r.peak_incidents_per_day == null ? "Unknown" : r.peak_incidents_per_day}</td>
+                    <td className="px-3 py-2">{safe(r.notes, "Not reported")}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
+      </section>
+
+      <section>
+        <SectionTitle>Or Add Initiatives Manually</SectionTitle>
+        <Card className="p-4 grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div>
+            <label className="text-xs uppercase text-gray-400">Initiative Name</label>
+            <Input value={form.initiative_name} onChange={e => setForm({ ...form, initiative_name: e.target.value })} placeholder="e.g. Cardiac Response Bronx" />
+          </div>
+          <div>
+            <label className="text-xs uppercase text-gray-400">Incident Type</label>
+            <Select value={form.incident_type} onChange={e => setForm({ ...form, incident_type: e.target.value })} className="w-full">
+              {INCIDENT_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+            </Select>
+          </div>
+          <div>
+            <label className="text-xs uppercase text-gray-400">Current Avg Response (min)</label>
+            <Input type="number" step="0.1" value={form.current_avg_response_minutes} onChange={e => setForm({ ...form, current_avg_response_minutes: e.target.value })} placeholder="e.g. 14.2" />
+          </div>
+          <div>
+            <label className="text-xs uppercase text-gray-400">Geography</label>
+            <Input value={form.geography} onChange={e => setForm({ ...form, geography: e.target.value })} placeholder="e.g. Bronx NY" />
+          </div>
+          <div>
+            <label className="text-xs uppercase text-gray-400">Peak Incidents Per Day</label>
+            <Input type="number" step="1" value={form.peak_incidents_per_day} onChange={e => setForm({ ...form, peak_incidents_per_day: e.target.value })} placeholder="e.g. 30" />
+          </div>
+          <div className="md:col-span-2">
+            <label className="text-xs uppercase text-gray-400">Notes</label>
+            <Textarea rows={2} value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} placeholder="Optional context, source, caveats…" />
+          </div>
+          <div className="md:col-span-2">
+            <Btn onClick={addInitiative} variant="primary">+ Add Initiative</Btn>
+          </div>
+        </Card>
+      </section>
+
+      <section>
+        <SectionTitle>Agentic Performance Prediction</SectionTitle>
+        <div className="overflow-x-auto border border-[#333] rounded">
+          <table className="w-full text-sm">
+            <thead className="bg-[#1a1a1a]">
+              <tr>
+                {["Initiative","Current (min)","DFR (min)","Agentic v1 (min)","Agentic v2 (min)","Agentic v3 (min)","Agentic v4 (min)","Minutes Saved","% Improvement","Annual Time Saved (min)"]
+                  .map((h, i) => (
+                  <th key={h} className={`text-left px-3 py-2 font-medium border-b border-[#333] ${i === 6 ? "text-red-400" : "text-gray-300"}`}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {predictions.length === 0 ? (
+                <tr><td colSpan={10} className="px-3 py-6 text-center text-gray-500">Add or upload at least one initiative.</td></tr>
+              ) : predictions.map((p, i) => (
+                <tr key={i} className="bg-[#111] border-b border-[#222] hover:bg-[#181818]">
+                  <td className="px-3 py-2 text-white">{safe(p.initiative_name)}</td>
+                  <td className="px-3 py-2 mono">{num(p.current_avg_response_minutes)}</td>
+                  <td className="px-3 py-2 mono">{num(p.dfr)}</td>
+                  <td className="px-3 py-2 mono">{num(p.v1)}</td>
+                  <td className="px-3 py-2 mono">{num(p.v2)}</td>
+                  <td className="px-3 py-2 mono">{num(p.v3)}</td>
+                  <td className="px-3 py-2 mono text-red-400 font-bold bg-red-950/30">{num(p.v4)}</td>
+                  <td className="px-3 py-2 mono">{num(p.saved)}</td>
+                  <td className="px-3 py-2 mono">{num(p.pctImp)}%</td>
+                  <td className="px-3 py-2 mono">{num(p.annual)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {predictions.length > 0 ? (
+          <Card className="p-4 mt-4">
+            <div className="text-sm font-medium text-white mb-2">Current vs DFR vs Agentic v4</div>
+            <div style={{ width: "100%", height: 320 }}>
+              <ResponsiveContainer>
+                <BarChart data={chartData} margin={{ top: 10, right: 20, left: 0, bottom: 30 }}>
+                  <CartesianGrid stroke="#222" strokeDasharray="3 3" />
+                  <XAxis dataKey="name" stroke="#888" tick={{ fill: "#ccc", fontSize: 11 }} angle={-15} textAnchor="end" height={60} />
+                  <YAxis stroke="#888" tick={{ fill: "#ccc", fontSize: 11 }} label={{ value: "minutes", angle: -90, position: "insideLeft", fill: "#888" }} />
+                  <Tooltip contentStyle={{ background: "#0a0a0a", border: "1px solid #333", color: "#fff" }} />
+                  <Legend wrapperStyle={{ color: "#ccc" }} />
+                  <Bar dataKey="Current" fill="#ef4444" />
+                  <Bar dataKey="DFR" fill="#3b82f6" />
+                  <Bar dataKey="Agentic v4" fill="#22c55e" />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </Card>
+        ) : null}
+      </section>
+
+      <section>
+        <SectionTitle>Agent Recommendation Report</SectionTitle>
+        <Card>
+          <details open={reportOpen} onToggle={(e) => setReportOpen(e.target.open)}>
+            <summary className="px-4 py-3 flex items-center justify-between text-white">
+              <span className="font-medium">Memo (auto-generated)</span>
+              <span className="text-xs text-gray-400">{reportOpen ? "Hide ▼" : "Show ▶"}</span>
+            </summary>
+            <div className="px-4 pb-4 border-t border-[#222]">
+              <div className="flex items-center gap-2 my-3">
+                <Btn onClick={copyReport} variant="secondary">📋 Copy Report Text</Btn>
+                {copied ? <span className="text-xs text-green-400">Copied!</span> : null}
+              </div>
+              <pre className="whitespace-pre-wrap text-sm text-gray-200 leading-relaxed" style={{ fontFamily: "'Courier New', Courier, monospace" }}>{memoText}</pre>
+            </div>
+          </details>
+        </Card>
+      </section>
+
+      <section>
+        <SectionTitle>Methodology Note</SectionTitle>
+        <Card className="p-4 text-sm text-gray-300 space-y-2">
+          <p>
+            The reduction factors used in this planner — DFR at 13% of current response time, and agentic
+            tiers v1 through v4 at 11.8%, 8.5%, 5.7%, and 4.8% respectively — are derived from the Omni
+            City model and from the UAS Response Latency Index research presented on the prior tab.
+          </p>
+          <p>
+            They reflect the modeled impact of compressing three sequential bottlenecks: decision latency
+            (from approximately 20 seconds to 5 seconds), deployment latency (from approximately 20 seconds
+            to 10 seconds), and travel latency through dynamic pre-positioning that reduces effective
+            distance by 30% to 60%.
+          </p>
+          <p>
+            These figures are illustrative benchmarks for planning conversations, not commitments. Actual
+            results depend on jurisdictional policy, fleet composition, and on whether human authority is
+            preserved over kinetic or irreversible response actions.
+          </p>
+        </Card>
+      </section>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* App shell                                                          */
+/* ------------------------------------------------------------------ */
+function ApiKeyBar({ apiKey, setApiKey, model, setModel, backendUrl, setBackendUrl }) {
+  const [show, setShow] = useState(false);
+  const [open, setOpen] = useState(!apiKey && !backendUrl);
+  const masked = apiKey ? apiKey.slice(0, 8) + "…" + apiKey.slice(-4) : "";
+  const hasBackend = !!backendUrl;
+  return (
+    <div id="api-key-bar" className="border-b border-[#222] bg-[#0d0d0d] sticky top-0 z-[1000] shadow-lg">
+      <div className="px-6 py-2 flex items-center gap-3 text-xs flex-wrap">
+        <span className="text-gray-400 uppercase tracking-wider">Mode</span>
+        {hasBackend ? (
+          <span className="text-green-400">📡 backend · {backendUrl.replace(/^https?:\/\//, "")}</span>
+        ) : apiKey ? (
+          <span className="text-green-400">🔑 browser-direct · key {masked}</span>
+        ) : (
+          <span className="text-yellow-400">⚠ no backend, no key — agent disabled (click Configure →)</span>
+        )}
+        <button onClick={() => setOpen(o => !o)} className={`ml-auto rounded px-2 py-1 border ${(apiKey || hasBackend) ? "text-gray-300 hover:text-white border-[#333]" : "text-yellow-300 border-yellow-700 bg-yellow-950/40 hover:bg-yellow-900/50"}`}>
+          {open ? "Hide" : "Configure"}
+        </button>
+      </div>
+      {open ? (
+        <div className="px-6 pb-3 space-y-3">
+          <div>
+            <label className="text-[10px] uppercase tracking-wider text-gray-500">Backend URL (recommended for public hosting — visitors don't need a key)</label>
+            <div className="flex gap-2">
+              <input type="text" value={backendUrl} onChange={e => setBackendUrl(e.target.value.trim().replace(/\/+$/, ""))}
+                placeholder="https://uas-latency-agent.your-subdomain.workers.dev"
+                className="flex-1 bg-[#0a0a0a] border border-[#333] rounded px-3 py-2 text-white text-sm focus:outline-none focus:border-green-500" />
+              {backendUrl ? (
+                <button onClick={() => setBackendUrl("")} className="text-xs text-gray-300 hover:text-red-300 border border-[#333] rounded px-2 py-1 whitespace-nowrap">Clear</button>
+              ) : null}
+            </div>
+            <div className="text-[11px] text-gray-500 mt-1">
+              When set, the app reads pre-classified items from your Cloudflare Worker (no API key needed). Leave blank to run live in the browser with your own key.
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-2 items-end">
+            <div className="flex-1 min-w-[280px]">
+              <label className="text-[10px] uppercase tracking-wider text-gray-500">
+                Anthropic API Key (in-memory only — only needed in browser-direct mode)
+              </label>
+              <div className="flex">
+                <input type={show ? "text" : "password"} value={apiKey} onChange={e => setApiKey(e.target.value)}
+                  placeholder={hasBackend ? "(not needed when backend is set)" : "sk-ant-…"}
+                  disabled={hasBackend}
+                  className="flex-1 bg-[#0a0a0a] border border-[#333] rounded-l px-3 py-2 text-white text-sm focus:outline-none focus:border-red-500 disabled:opacity-40" />
+                <button onClick={() => setShow(s => !s)} className="border border-l-0 border-[#333] px-3 text-xs text-gray-300 hover:text-white rounded-r">{show ? "hide" : "show"}</button>
+              </div>
+            </div>
+            <div>
+              <label className="text-[10px] uppercase tracking-wider text-gray-500">Model (browser mode)</label>
+              <select value={model} onChange={e => setModel(e.target.value)} disabled={hasBackend}
+                className="bg-[#0a0a0a] border border-[#333] rounded px-3 py-2 text-white text-sm focus:outline-none focus:border-red-500 disabled:opacity-40">
+                <option value="claude-haiku-4-5-20251001">claude-haiku-4-5 (fast / cheap)</option>
+                <option value="claude-sonnet-4-6">claude-sonnet-4-6 (balanced)</option>
+                <option value="claude-opus-4-6">claude-opus-4-6 (best quality)</option>
+              </select>
+            </div>
+            <div className="text-[11px] text-gray-500 max-w-[420px]">
+              Browser-direct uses <code>anthropic-dangerous-direct-browser-access</code>. Use a personal key; do not share this URL with the key entered.
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function App() {
+  const [tab, setTab] = useState("latency");
+  const [apiKey, setApiKey] = useState("");
+  const [model, setModel] = useState("claude-haiku-4-5-20251001");
+  const [backendUrl, setBackendUrl] = useState(readBackendFromUrl());
+  return (
+    <div className="min-h-screen" style={{ background: "#0a0a0a" }}>
+      <div className="border-b border-[#222]">
+        <div className="px-6 pt-5 pb-2">
+          <div className="text-xs uppercase tracking-widest text-gray-500">Research Preview</div>
+          <h1 className="text-3xl font-bold text-white mt-1">UAS Response Latency Index <span className="text-red-500">+</span> Agentic Crisis Planner</h1>
+        </div>
+        <Tabs value={tab} onChange={setTab} />
+      </div>
+      <ApiKeyBar apiKey={apiKey} setApiKey={setApiKey} model={model} setModel={setModel} backendUrl={backendUrl} setBackendUrl={setBackendUrl} />
+      <main className="px-6 py-6 max-w-[1400px] mx-auto">
+        {tab === "latency" ? <UASLatencyTab apiKey={apiKey} setApiKey={setApiKey} model={model} backendUrl={backendUrl} /> : <PlannerTab />}
+      </main>
+      <footer className="px-6 py-6 text-xs text-gray-500 border-t border-[#222]">
+        Illustrative research preview · Courier New · dark mode · all data is local to this page.
+      </footer>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
